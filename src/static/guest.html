@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Toneii - Player Dashboard (Guest)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #111417; background-image: radial-gradient(circle at center, #1b222a 0%, #0d1014 100%); }
+        h1, h2, h3, .dnd-font { font-family: 'Cinzel', serif; }
+        .dnd-card { background: rgba(20, 25, 30, 0.85); border: 1px solid #2d4f73; box-shadow: 0 4px 15px rgba(0,0,0,0.5); border-radius: 6px; }
+        .btn-silver { background: linear-gradient(to bottom, #7a8d9e, #3a4b5c); color: #fff; border: 1px solid #a3b8cc; text-shadow: 1px 1px 2px #000; }
+        .btn-silver:hover { background: linear-gradient(to bottom, #a3b8cc, #7a8d9e); }
+        .range-blue { accent-color: #5c8ab8; }
+    </style>
+</head>
+<body class="text-blue-100 min-h-screen flex flex-col p-6">
+    
+    <div id="joinOverlay" class="fixed inset-0 bg-black/95 flex flex-col items-center justify-center z-50">
+        <h1 class="text-5xl font-bold mb-2 text-blue-400 tracking-wider">TONEII</h1>
+        <p class="mb-8 text-blue-200/60 font-serif italic text-lg">Player Dashboard</p>
+        
+        <div class="flex flex-col gap-4 mb-8 w-80">
+            <input type="text" id="guestNameInput" class="px-4 py-3 rounded bg-black/50 text-blue-100 border border-blue-800/50 focus:outline-none focus:border-blue-400 text-center" placeholder="Character / Your Name">
+            <input type="text" id="roomIdInput" value="Tavern-01" class="px-4 py-3 rounded bg-black/50 text-blue-100 border border-blue-800/50 focus:outline-none focus:border-blue-400 text-center" placeholder="Room ID">
+        </div>
+        
+        <button id="joinBtn" class="btn-silver font-bold py-3 px-12 rounded text-xl shadow-lg transition">Join Session</button>
+    </div>
+
+    <div id="mainContent" class="hidden max-w-4xl mx-auto w-full flex flex-col gap-6">
+        <div class="flex justify-between items-end border-b border-blue-800/30 pb-4">
+            <div>
+                <h1 class="text-3xl font-bold text-blue-400">Player Dashboard</h1>
+                <p id="connectionStatus" class="mt-1 text-sm text-green-400">Connected</p>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <span class="text-sm font-semibold text-blue-300">My Earplugs (Vol)</span>
+                <input type="range" id="masterVolume" min="0" max="1" step="0.01" value="0.7" class="w-32 range-blue cursor-pointer">
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="dnd-card p-6 flex flex-col items-center justify-center text-center">
+                <h3 class="text-sm font-semibold text-blue-400/70 mb-2 uppercase tracking-widest">Environment (BGM)</h3>
+                <p id="nowPlayingText" class="text-2xl font-medium text-white dnd-font truncate w-full">- Silence -</p>
+            </div>
+
+            <div id="uploadPanel" class="dnd-card p-6 hidden">
+                <h3 class="text-lg font-semibold text-blue-300 mb-3 flex items-center gap-2">
+                    <span>✨ Cast Audio Spell</span>
+                </h3>
+                <form id="uploadForm" class="flex flex-col gap-3">
+                    <input type="file" id="audioFile" accept="audio/*" class="text-xs bg-black/30 p-2 rounded border border-blue-900/50" multiple required>
+                    <button type="submit" class="btn-silver py-2 rounded font-medium text-sm">Upload SFX</button>
+                </form>
+                <p id="uploadStatus" class="mt-2 text-xs text-center"></p>
+            </div>
+        </div>
+
+        <div class="dnd-card p-6">
+            <h2 class="text-xl font-semibold text-blue-300 mb-4 dnd-font border-b border-blue-800/30 pb-2">Sound Effects</h2>
+            <div id="sfxList" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-[500px] overflow-y-auto pr-2">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let myName = "";
+        let room = "";
+        let masterVol = 0.7;
+        
+        const bgmPlayer = new Audio();
+        bgmPlayer.loop = true;
+        let currentBgmDefaultVol = 1.0;
+        
+        const activeSfx = new Set();
+
+        const joinOverlay = document.getElementById('joinOverlay');
+        const mainContent = document.getElementById('mainContent');
+        const uploadPanel = document.getElementById('uploadPanel');
+        const nowPlayingText = document.getElementById('nowPlayingText');
+        const sfxList = document.getElementById('sfxList');
+
+        document.getElementById('masterVolume').addEventListener('input', (e) => {
+            masterVol = parseFloat(e.target.value);
+            bgmPlayer.volume = currentBgmDefaultVol * masterVol;
+            activeSfx.forEach(a => {
+                a.volume = (parseFloat(a.dataset.defaultVol) || 1.0) * masterVol;
+            });
+        });
+
+        document.getElementById('joinBtn').addEventListener('click', () => {
+            myName = document.getElementById('guestNameInput').value.trim();
+            room = document.getElementById('roomIdInput').value.trim();
+            if (!myName || !room) return alert("Please enter Name and Room ID");
+            
+            new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA').play().catch(()=>{});
+            
+            joinOverlay.classList.add('hidden');
+            mainContent.classList.remove('hidden');
+            document.getElementById('connectionStatus').innerText = `Room: ${room} | Player: ${myName}`;
+            
+            connectWebSocket();
+            fetchAudioFiles();
+        });
+
+        function connectWebSocket() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${room}/${encodeURIComponent(myName)}/guest`);
+            
+            ws.onmessage = (e) => {
+                const cmd = JSON.parse(e.data);
+                
+                if (cmd.action === 'user_update') {
+                    const me = cmd.users.find(u => u.name === myName);
+                    if (me && me.can_upload) uploadPanel.classList.remove('hidden');
+                    else uploadPanel.classList.add('hidden');
+                }
+                
+                if (cmd.action === 'refresh_list') fetchAudioFiles();
+                
+                if (cmd.action === 'volume_bgm') {
+                    currentBgmDefaultVol = cmd.volume;
+                    bgmPlayer.volume = currentBgmDefaultVol * masterVol;
+                }
+                
+                if (cmd.action === 'play_bgm') {
+                    bgmPlayer.src = `/static/audio/${cmd.filename}`;
+                    currentBgmDefaultVol = cmd.volume || 1.0;
+                    bgmPlayer.volume = currentBgmDefaultVol * masterVol;
+                    bgmPlayer.play();
+                    nowPlayingText.innerText = cmd.filename;
+                }
+                if (cmd.action === 'pause_bgm') bgmPlayer.pause();
+                if (cmd.action === 'seek_bgm') bgmPlayer.currentTime = cmd.time;
+                if (cmd.action === 'stop_bgm') { bgmPlayer.pause(); bgmPlayer.currentTime = 0; nowPlayingText.innerText = "- Silence -"; }
+                if (cmd.action === 'play_sfx') playSfxLocally(cmd.filename, cmd.volume);
+                if (cmd.action === 'stop_all') {
+                    bgmPlayer.pause();
+                    activeSfx.forEach(a => a.pause());
+                    activeSfx.clear();
+                    nowPlayingText.innerText = "- Silence -";
+                }
+            };
+            ws.onclose = () => setTimeout(connectWebSocket, 3000);
+        }
+
+        function playSfxLocally(file, vol) {
+            const a = new Audio(`/static/audio/${file}`);
+            a.dataset.defaultVol = vol || 1.0;
+            a.volume = parseFloat(a.dataset.defaultVol) * masterVol;
+            a.play();
+            activeSfx.add(a);
+            a.onended = () => activeSfx.delete(a);
+        }
+
+        // ================= FIX MULTI-UPLOAD ================= //
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const filesInput = document.getElementById('audioFile');
+            const status = document.getElementById('uploadStatus');
+            
+            if(filesInput.files.length === 0) return;
+            
+            const fd = new FormData();
+            for(let i=0; i<filesInput.files.length; i++) {
+                fd.append('files', filesInput.files[i]);
+            }
+            fd.append('category', 'SFX');
+            fd.append('uploader_name', myName);
+            
+            status.innerText = `Casting ${filesInput.files.length} spell(s)...`;
+            status.className = "mt-2 text-xs text-yellow-400";
+            
+            const res = await fetch('/api/upload', { method: 'POST', body: fd });
+            if (res.ok) {
+                status.innerText = "Audio conjured!";
+                status.className = "mt-2 text-xs text-green-400";
+                document.getElementById('uploadForm').reset();
+                fetchAudioFiles();
+                ws.send(JSON.stringify({action: 'refresh_list'}));
+            } else {
+                status.innerText = "Spell failed. 422 Unprocessable Entity - check file format.";
+                status.className = "mt-2 text-xs text-red-400";
+            }
+        });
+        // ==================================================== //
+
+        async function fetchAudioFiles() {
+            const res = await fetch('/api/audio_files');
+            const data = await res.json();
+            const sfxs = data.files.filter(f => f.category === 'SFX');
+            
+            sfxList.innerHTML = '';
+            sfxs.forEach(f => {
+                const isMine = f.uploader_name === myName;
+                const uploaderTxt = f.uploader_name !== 'Host' ? `<br><span class="text-[10px] text-blue-400 font-normal">By: ${f.uploader_name}</span>` : '';
+                const btn = document.createElement('div');
+                btn.className = 'bg-black/30 p-3 rounded border border-blue-900/50 hover:bg-blue-900/20 transition cursor-pointer text-center relative shadow-md shadow-black flex flex-col items-center justify-center min-h-[80px]';
+                
+                let html = `<span class="font-bold text-sm tracking-wide text-blue-100">${f.display_name}${uploaderTxt}</span>`;
+                if(isMine) {
+                    html += `<button onclick="deleteMyFile(event, ${f.id})" class="absolute top-1 right-1 text-[10px] bg-red-900/80 px-1 rounded hover:bg-red-700">x</button>`;
+                }
+                
+                btn.innerHTML = html;
+                btn.onclick = (e) => {
+                    if(e.target.tagName !== 'BUTTON') {
+                        ws.send(JSON.stringify({action: 'play_sfx', filename: f.file_path, volume: f.default_volume}));
+                        playSfxLocally(f.file_path, f.default_volume);
+                    }
+                };
+                sfxList.appendChild(btn);
+            });
+        }
+
+        async function deleteMyFile(e, id) {
+            e.stopPropagation();
+            if(!confirm("Erase this sound?")) return;
+            await fetch(`/api/audio_files/${id}`, {method: 'DELETE'});
+            ws.send(JSON.stringify({action: 'refresh_list'}));
+            fetchAudioFiles();
+        }
+    </script>
+</body>
+</html>

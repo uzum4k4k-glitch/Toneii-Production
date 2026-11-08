@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Toneii - DM Dashboard (Host)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #1a1514; background-image: radial-gradient(circle at center, #2a201d 0%, #110e0c 100%); }
+        h1, h2, h3, .dnd-font { font-family: 'Cinzel', serif; }
+        .dnd-card { background: rgba(30, 24, 22, 0.85); border: 1px solid #734f2d; box-shadow: 0 4px 15px rgba(0,0,0,0.5); border-radius: 6px; }
+        .btn-gold { background: linear-gradient(to bottom, #b48530, #734f2d); color: #fff; border: 1px solid #d4af37; text-shadow: 1px 1px 2px #000; }
+        .btn-gold:hover { background: linear-gradient(to bottom, #d4af37, #b48530); }
+        .btn-red { background: linear-gradient(to bottom, #8a2525, #5c1414); border: 1px solid #ff4d4d; color: white; }
+        .btn-red:hover { background: linear-gradient(to bottom, #b03030, #8a2525); }
+        .range-gold { accent-color: #b48530; }
+    </style>
+</head>
+<body class="text-amber-100 min-h-screen flex flex-col p-6">
+    
+    <div id="joinOverlay" class="fixed inset-0 bg-black/90 flex flex-col items-center justify-center z-50">
+        <h1 class="text-5xl font-bold mb-2 text-amber-500 tracking-wider">TONEII</h1>
+        <p class="mb-8 text-amber-200/60 font-serif italic text-lg">Dungeon Master Dashboard</p>
+        
+        <div class="flex flex-col gap-4 mb-8 w-80">
+            <input type="text" id="hostNameInput" value="Dungeon Master" class="px-4 py-3 rounded bg-black/50 text-amber-100 border border-amber-700/50 focus:outline-none focus:border-amber-400 text-center" placeholder="Your Name">
+            <input type="text" id="roomIdInput" value="Tavern-01" class="px-4 py-3 rounded bg-black/50 text-amber-100 border border-amber-700/50 focus:outline-none focus:border-amber-400 text-center" placeholder="Room ID">
+        </div>
+        
+        <button id="connectBtn" class="btn-gold font-bold py-3 px-12 rounded text-xl shadow-lg transition">Enter the Realm</button>
+    </div>
+
+    <div id="mainContent" class="hidden max-w-7xl mx-auto w-full">
+        <div class="flex justify-between items-end mb-6 border-b border-amber-700/30 pb-4">
+            <div>
+                <h1 class="text-3xl font-bold text-amber-500">DM Dashboard</h1>
+                <p id="connectionStatus" class="mt-1 text-sm text-green-400">Connected to room</p>
+            </div>
+            <button id="stopAllBtn" class="btn-red px-6 py-2 rounded font-bold transition flex items-center gap-2">
+                STOP ALL SOUNDS
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="flex flex-col gap-6">
+                <div class="dnd-card p-5">
+                    <h2 class="text-xl font-semibold mb-4 text-amber-400">Add Audio to Library</h2>
+                    <form id="uploadForm" class="flex flex-col gap-3">
+                        <input type="file" id="audioFile" accept="audio/*" class="text-sm bg-black/30 p-2 rounded border border-amber-900/50 cursor-pointer" multiple required>
+                        <select id="audioCategory" class="p-2 rounded bg-black/50 border border-amber-900/50 text-amber-100 focus:outline-none" required>
+                            <option value="BGM">Background Music (BGM)</option>
+                            <option value="SFX">Sound Effect (SFX)</option>
+                        </select>
+                        <button type="submit" class="btn-gold py-2 rounded font-medium transition mt-2">Upload Files</button>
+                    </form>
+                    <p id="uploadStatus" class="mt-2 text-sm text-center"></p>
+                </div>
+
+                <div class="dnd-card p-5 flex-grow">
+                    <h2 class="text-xl font-semibold mb-4 text-amber-400">Adventurers in Room</h2>
+                    <div id="userList" class="space-y-3">
+                        <p class="text-amber-100/50 text-sm italic">Waiting for players...</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-2 flex flex-col gap-6">
+                <div class="dnd-card p-5">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-semibold text-blue-400 dnd-font">Background Music (BGM)</h2>
+                        <button class="refreshLibraryBtn text-xs px-3 py-1 rounded bg-black/40 border border-amber-900/50 hover:bg-black/60 transition">Refresh</button>
+                    </div>
+                    <div id="bgmList" class="space-y-4 max-h-[400px] overflow-y-auto pr-2"></div>
+                </div>
+
+                <div class="dnd-card p-5">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-semibold text-teal-400 dnd-font">Sound Effects (SFX)</h2>
+                        <button class="refreshLibraryBtn text-xs px-3 py-1 rounded bg-black/40 border border-amber-900/50 hover:bg-black/60 transition">Refresh</button>
+                    </div>
+                    <div id="sfxList" class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto pr-2"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let myName = "";
+        let room = "";
+        
+        const hostBgmPlayer = new Audio();
+        let isScrubbing = false;
+        let activeBgmId = null;
+
+        const joinOverlay = document.getElementById('joinOverlay');
+        const mainContent = document.getElementById('mainContent');
+        const connectBtn = document.getElementById('connectBtn');
+        const uploadForm = document.getElementById('uploadForm');
+        const userListDiv = document.getElementById('userList');
+        const bgmList = document.getElementById('bgmList');
+        const sfxList = document.getElementById('sfxList');
+
+        connectBtn.addEventListener('click', () => {
+            myName = document.getElementById('hostNameInput').value.trim() || 'DM';
+            room = document.getElementById('roomIdInput').value.trim();
+            if (!room) return alert("Enter Room ID");
+            
+            joinOverlay.classList.add('hidden');
+            mainContent.classList.remove('hidden');
+            document.getElementById('connectionStatus').innerText = `Room: ${room} | Host: ${myName}`;
+            
+            connectWebSocket();
+            fetchAudioFiles();
+        });
+
+        function connectWebSocket() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${room}/${encodeURIComponent(myName)}/host`);
+            
+            ws.onmessage = (e) => {
+                const cmd = JSON.parse(e.data);
+                if (cmd.action === 'user_update') renderUsers(cmd.users);
+                if (cmd.action === 'refresh_list') fetchAudioFiles();
+                if (cmd.action === 'play_sfx') playLocalSfx(cmd.filename, cmd.volume); 
+            };
+            ws.onclose = () => setTimeout(connectWebSocket, 3000);
+        }
+
+        function renderUsers(users) {
+            userListDiv.innerHTML = '';
+            const guests = users.filter(u => u.role === 'guest');
+            if (guests.length === 0) {
+                userListDiv.innerHTML = '<p class="text-amber-100/50 text-sm italic">No players joined yet.</p>';
+                return;
+            }
+            guests.forEach(u => {
+                const div = document.createElement('div');
+                div.className = 'flex items-center justify-between bg-black/40 p-2 rounded border border-amber-900/30';
+                div.innerHTML = `
+                    <span class="font-medium">${u.name}</span>
+                    <label class="flex items-center gap-2 text-xs cursor-pointer">
+                        <input type="checkbox" class="accent-amber-500" ${u.can_upload ? 'checked' : ''} 
+                            onchange="ws.send(JSON.stringify({action:'grant_upload', target_name:'${u.name}', can_upload:this.checked}))">
+                        Allow Upload
+                    </label>
+                `;
+                userListDiv.appendChild(div);
+            });
+        }
+
+        // ================= FIX MULTI-UPLOAD ================= //
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const filesInput = document.getElementById('audioFile');
+            const cat = document.getElementById('audioCategory').value;
+            const status = document.getElementById('uploadStatus');
+            
+            if(filesInput.files.length === 0) return;
+            
+            const fd = new FormData();
+            for(let i=0; i<filesInput.files.length; i++) {
+                fd.append('files', filesInput.files[i]); // Ensure 'files' matches backend
+            }
+            fd.append('category', cat);
+            fd.append('uploader_name', myName);
+            
+            status.innerText = `Uploading ${filesInput.files.length} file(s) via portal...`;
+            status.className = "mt-2 text-sm text-yellow-400";
+            
+            const res = await fetch('/api/upload', { method: 'POST', body: fd });
+            if (res.ok) {
+                status.innerText = "Audio conjured successfully!";
+                status.className = "mt-2 text-sm text-green-400";
+                uploadForm.reset();
+                fetchAudioFiles();
+                ws.send(JSON.stringify({action: 'refresh_list'}));
+            } else {
+                status.innerText = "Spell failed. 422 Unprocessable Entity - check file format.";
+                status.className = "mt-2 text-sm text-red-400";
+            }
+        });
+        // ==================================================== //
+
+        async function fetchAudioFiles() {
+            const res = await fetch('/api/audio_files');
+            const data = await res.json();
+            renderBGM(data.files.filter(f => f.category === 'BGM'));
+            renderSFX(data.files.filter(f => f.category === 'SFX'));
+        }
+
+        async function updateApi(type, id, val) {
+            const payload = type === 'name' ? {display_name: val} : {default_volume: val};
+            await fetch(`/api/audio_files/${id}/${type}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+        }
+
+        async function deleteFile(id) {
+            if(!confirm("Banish this audio file forever?")) return;
+            await fetch(`/api/audio_files/${id}`, {method: 'DELETE'});
+            fetchAudioFiles();
+            ws.send(JSON.stringify({action: 'refresh_list'}));
+        }
+
+        function renderBGM(files) {
+            bgmList.innerHTML = files.length ? '' : '<p class="text-sm italic opacity-50">No BGM available.</p>';
+            files.forEach(f => {
+                const div = document.createElement('div');
+                div.className = 'bg-black/40 p-3 rounded border border-amber-900/50 flex flex-col gap-2';
+                div.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <span class="font-bold tracking-wide">${f.display_name}</span>
+                        <div class="flex gap-2">
+                            <button onclick="editName(${f.id}, '${f.display_name}')" class="text-xs px-2 py-1 bg-stone-700 hover:bg-stone-600 rounded">Edit</button>
+                            <button onclick="deleteFile(${f.id})" class="text-xs px-2 py-1 bg-red-900 hover:bg-red-800 rounded">Del</button>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs">
+                        Vol: <input type="range" id="vol_${f.id}" min="0" max="1" step="0.01" value="${f.default_volume}" 
+                            oninput="liveVolumeUpdate(${f.id}, this.value)" 
+                            onchange="updateApi('volume', ${f.id}, this.value)" class="w-24 range-gold">
+                    </div>
+                    <input type="range" id="seek_${f.id}" min="0" max="100" value="0" class="w-full h-1 range-gold cursor-pointer" 
+                        oninput="isScrubbing=true" 
+                        onchange="isScrubbing=false; if(activeBgmId==${f.id}) scrubBgm(this.value, '${f.file_path}', document.getElementById('vol_${f.id}').value);">
+                    <div class="flex gap-2 justify-end mt-1">
+                        <button onclick="testLocalBgm('${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id})" class="text-xs px-3 py-1 bg-stone-600 rounded hover:bg-stone-500">Test</button>
+                        <button onclick="roomPlayBgm('${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id})" class="text-xs px-3 py-1 bg-blue-800 rounded hover:bg-blue-700">▶ Play</button>
+                        <button onclick="roomPauseBgm()" class="text-xs px-3 py-1 bg-amber-800 rounded hover:bg-amber-700">❚❚ Pause</button>
+                        <button onclick="roomStopBgm()" class="text-xs px-3 py-1 bg-red-800 rounded hover:bg-red-700">■ Stop</button>
+                    </div>
+                `;
+                bgmList.appendChild(div);
+            });
+        }
+
+        function liveVolumeUpdate(id, val) {
+            if(activeBgmId == id) {
+                hostBgmPlayer.volume = val;
+                ws.send(JSON.stringify({action: 'volume_bgm', volume: val}));
+            }
+        }
+
+        function renderSFX(files) {
+            sfxList.innerHTML = files.length ? '' : '<p class="text-sm italic opacity-50">No SFX available.</p>';
+            files.forEach(f => {
+                const uploaderTxt = f.uploader_name !== 'Host' ? `<span class="text-[10px] text-teal-300/70 ml-2">(${f.uploader_name})</span>` : '';
+                const div = document.createElement('div');
+                div.className = 'bg-black/40 p-3 rounded border border-amber-900/50 flex flex-col gap-2';
+                div.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <span class="font-bold truncate" title="${f.display_name}">${f.display_name}${uploaderTxt}</span>
+                        <div class="flex gap-1 shrink-0">
+                            <button onclick="editName(${f.id}, '${f.display_name}')" class="text-[10px] px-1.5 py-0.5 bg-stone-700 rounded">Edit</button>
+                            <button onclick="deleteFile(${f.id})" class="text-[10px] px-1.5 py-0.5 bg-red-900 rounded">Del</button>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between mt-1">
+                        <input type="range" id="vol_${f.id}" min="0" max="1" step="0.01" value="${f.default_volume}" onchange="updateApi('volume', ${f.id}, this.value)" class="w-16 range-gold">
+                        <div class="flex gap-1">
+                            <button onclick="playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value)" class="text-[10px] px-2 py-1 bg-stone-600 rounded">Test</button>
+                            <button onclick="ws.send(JSON.stringify({action:'play_sfx', filename:'${f.file_path}', volume:document.getElementById('vol_${f.id}').value})); playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value);" class="text-[10px] px-2 py-1 bg-teal-800 rounded font-bold">Play</button>
+                        </div>
+                    </div>
+                `;
+                sfxList.appendChild(div);
+            });
+        }
+
+        function editName(id, old) {
+            const n = prompt("Rename spell/scroll:", old);
+            if(n && n.trim()) {
+                updateApi('name', id, n.trim()).then(fetchAudioFiles);
+            }
+        }
+
+        hostBgmPlayer.loop = true;
+        hostBgmPlayer.addEventListener('timeupdate', () => {
+            if(!isScrubbing && activeBgmId) {
+                const bar = document.getElementById(`seek_${activeBgmId}`);
+                if(bar) {
+                    bar.max = hostBgmPlayer.duration || 100;
+                    bar.value = hostBgmPlayer.currentTime;
+                }
+            }
+        });
+
+        function testLocalBgm(file, vol, id) {
+            activeBgmId = id;
+            hostBgmPlayer.src = `/static/audio/${file}`;
+            hostBgmPlayer.volume = vol;
+            hostBgmPlayer.play();
+        }
+
+        function roomPlayBgm(file, vol, id) {
+            testLocalBgm(file, vol, id); 
+            ws.send(JSON.stringify({action: 'play_bgm', filename: file, volume: vol}));
+        }
+
+        function roomPauseBgm() {
+            hostBgmPlayer.pause();
+            ws.send(JSON.stringify({action: 'pause_bgm'}));
+        }
+
+        function roomStopBgm() {
+            hostBgmPlayer.pause();
+            hostBgmPlayer.currentTime = 0;
+            ws.send(JSON.stringify({action: 'stop_bgm'}));
+            if(activeBgmId) {
+                const bar = document.getElementById(`seek_${activeBgmId}`);
+                if(bar) bar.value = 0;
+            }
+        }
+
+        function scrubBgm(time, file, vol) {
+            hostBgmPlayer.currentTime = time;
+            ws.send(JSON.stringify({action: 'seek_bgm', time: time}));
+        }
+
+        function playLocalSfx(file, vol) {
+            const a = new Audio(`/static/audio/${file}`);
+            a.volume = vol;
+            a.play();
+        }
+
+        document.getElementById('stopAllBtn').addEventListener('click', () => {
+            roomStopBgm();
+            ws.send(JSON.stringify({action: 'stop_all'}));
+        });
+
+        document.querySelectorAll('.refreshLibraryBtn').forEach(b => b.addEventListener('click', fetchAudioFiles));
+    </script>
+</body>
+</html>
