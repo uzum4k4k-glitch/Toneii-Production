@@ -1,18 +1,30 @@
-# Toneii - DnD Edition (Real-time Soundboard)
+# Toneii - DnD Edition (Real-time Soundboard v3.5)
 
-ยินดีต้อนรับสู่ Toneii โปรเจกต์ Soundboard สำหรับเกม Tabletop RPG (D&D) ที่สามารถซิงค์เสียงผ่าน WebSockets ให้ผู้เล่นทุกคนได้ยินพร้อมกัน!
+ยินดีต้อนรับสู่ Toneii โปรเจกต์ Soundboard สำหรับเกม Tabletop RPG (D&D) ที่สามารถซิงค์เสียงให้ผู้เล่นทุกคนได้ยินพร้อมกัน! 
+เวอร์ชันนี้จัดเต็มด้วยฟีเจอร์ Pause, Seek Bar, ห้องโปรไฟล์, และระบบอนุญาตผู้เล่นอัปโหลด SFX
 
-## 📦 การติดตั้งและการรันใช้งานเบื้องต้น (เล่นในวง LAN หรือเครื่องตัวเอง)
-1. เปิด Terminal / Command Prompt ในโฟลเดอร์นี้
-2. ติดตั้งไลบรารี: `pip install -r requirements.txt`
-3. รันเซิร์ฟเวอร์: `uvicorn main:app --reload`
-4. เปิดเบราว์เซอร์:
-   - **สำหรับ DM (คุณ):** `http://localhost:8000/static/host.html`
-   - **สำหรับ Player:** `http://localhost:8000/static/guest.html`
+## 📦 การติดตั้งและเปิดเซิร์ฟเวอร์
+1. **เตรียมความพร้อม:** แตกไฟล์ .zip นี้ลงในเครื่องของคุณ (อย่าลืมย้ายไฟล์เสียงเก่ามาใส่โฟลเดอร์ `src/static/audio` และ "ลบ" `toneii.db` อันเก่าทิ้งเพื่อให้มันสร้างใหม่รองรับฟีเจอร์ใหม่)
+2. **ติดตั้งไลบรารี:** เปิด Command Prompt ชี้มาที่โฟลเดอร์นี้ แล้วพิมพ์ `pip install -r requirements.txt`
+3. **รันเซิร์ฟเวอร์:** พิมพ์ `uvicorn main:app --reload` (ห้ามปิดหน้าต่างนี้ระหว่างใช้งาน)
+4. เปิดหน้า Host ในเบราว์เซอร์: `http://localhost:8000/static/host.html`
 
 ---
 
-## 🌍 คู่มือการเปิดให้เพื่อนใน Discord เข้ามาเล่นด้วย (Online Play)
-1. เปิด Command Prompt ตัวใหม่ เข้าไปที่โฟลเดอร์ที่เก็บ `ngrok.exe` แล้วพิมพ์คำสั่ง:
-   `ngrok http 8000`
-2. ส่งลิงก์ Forwarding ที่ได้ให้เพื่อน! (เช่น `https://xxx.ngrok-free.app/static/guest.html`)
+## 🌍 คู่มือการเล่นออนไลน์กับเพื่อนใน Discord (ด้วย Ngrok)
+ถ้าเพื่อนคุณไม่ได้อยู่ในวง LAN เดียวกัน คุณต้องใช้ Ngrok เพื่อสร้างลิงก์ชั่วคราวส่งให้เพื่อน
+
+1. **สมัครและติดตั้ง Ngrok:**
+   - ไปที่ https://ngrok.com สมัครสมาชิกฟรี 
+   - ดาวน์โหลดไฟล์ .exe มาไว้ในเครื่อง
+   - ในหน้าเว็บ Ngrok หาหัวข้อ **Your Authtoken** แล้วก๊อปปี้คำสั่ง (เช่น `ngrok config add-authtoken xxxx...`)
+   - เปิด Command Prompt ใหม่ เอาคำสั่งนั้นไปวางแล้วกด Enter เพื่อยืนยันตัวตน (ทำแค่ครั้งแรกครั้งเดียว)
+2. **เปิดช่องทางเชื่อมต่อ:**
+   - ใน Command Prompt (ตัวเดียวกับข้อ 1 หรือตัวใหม่ก็ได้) พิมพ์: `ngrok http 8000` (หรือลาก ngrok.exe มาวาง เคาะ space bar แล้วพิมพ์ `http 8000`)
+3. **ส่งลิงก์ให้เพื่อน:**
+   - มองหาบรรทัดที่เขียนว่า **Forwarding** (เช่น `https://xxxx.ngrok-free.app -> http://localhost:8000`)
+   - ก๊อปปี้ลิงก์ที่ลงท้ายด้วย `.ngrok-free.app` ส่งให้เพื่อน โดยบอกให้เพื่อนเติม `/static/guest.html` ต่อท้ายลิงก์เวลาจะเข้า
+   - **ตัวอย่างลิงก์ให้เพื่อน:** `https://xxxx.ngrok-free.app/static/guest.html`
+4. **ในหน้าเว็บ:**
+   - ฝั่ง Host (คุณ): เข้าลิงก์ ngrok เติม `/static/host.html` แล้วตั้งชื่อห้อง รอรับเพื่อนได้เลย
+   - (เคล็ดลับ: เข้าผ่านลิงก์ localhost ปกติก็ได้ แต่ระวังบั๊ก WebSockets หากเพื่อนเข้าผ่านลิงก์ Ngrok แนะนำให้ Host เข้าผ่านลิงก์ Ngrok ด้วยจะเสถียรที่สุด)

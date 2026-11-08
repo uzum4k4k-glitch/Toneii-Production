@@ -14,6 +14,9 @@
         .btn-red { background: linear-gradient(to bottom, #8a2525, #5c1414); border: 1px solid #ff4d4d; color: white; }
         .btn-red:hover { background: linear-gradient(to bottom, #b03030, #8a2525); }
         .range-gold { accent-color: #b48530; }
+        
+        .user-flash { animation: flash-gold 1s ease-out; }
+        @keyframes flash-gold { 0% { box-shadow: 0 0 15px #d4af37, inset 0 0 10px #d4af37; border-color: #d4af37; } 100% { box-shadow: none; border-color: rgba(115, 79, 45, 0.3); } }
     </style>
 </head>
 <body class="text-amber-100 min-h-screen flex flex-col p-6">
@@ -24,7 +27,10 @@
         
         <div class="flex flex-col gap-4 mb-8 w-80">
             <input type="text" id="hostNameInput" value="Dungeon Master" class="px-4 py-3 rounded bg-black/50 text-amber-100 border border-amber-700/50 focus:outline-none focus:border-amber-400 text-center" placeholder="Your Name">
-            <input type="text" id="roomIdInput" value="Tavern-01" class="px-4 py-3 rounded bg-black/50 text-amber-100 border border-amber-700/50 focus:outline-none focus:border-amber-400 text-center" placeholder="Room ID">
+            <input type="text" id="roomIdInput" value="Tavern-01" class="px-4 py-3 rounded bg-black/50 text-amber-100 border border-amber-700/50 focus:outline-none focus:border-amber-400 text-center" placeholder="Create Room ID">
+            <div id="activeRoomsList" class="text-xs text-amber-200/60 text-center mt-2 max-h-20 overflow-y-auto hidden">
+                <p>Active Rooms: <span id="roomsContainer"></span></p>
+            </div>
         </div>
         
         <button id="connectBtn" class="btn-gold font-bold py-3 px-12 rounded text-xl shadow-lg transition">Enter the Realm</button>
@@ -32,13 +38,24 @@
 
     <div id="mainContent" class="hidden max-w-7xl mx-auto w-full">
         <div class="flex justify-between items-end mb-6 border-b border-amber-700/30 pb-4">
-            <div>
-                <h1 class="text-3xl font-bold text-amber-500">DM Dashboard</h1>
-                <p id="connectionStatus" class="mt-1 text-sm text-green-400">Connected to room</p>
+            <div class="flex items-center gap-4">
+                <div class="relative group cursor-pointer" onclick="changeRoomProfile()">
+                    <img id="roomProfileImg" src="https://via.placeholder.com/150/1a1514/d4af37?text=DnD" class="w-16 h-16 rounded-full border-2 border-amber-700 object-cover">
+                    <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition text-xs font-bold">Edit</div>
+                </div>
+                <div>
+                    <h1 class="text-3xl font-bold text-amber-500">DM Dashboard</h1>
+                    <p id="connectionStatus" class="mt-1 text-sm text-green-400">Connected to room</p>
+                </div>
             </div>
-            <button id="stopAllBtn" class="btn-red px-6 py-2 rounded font-bold transition flex items-center gap-2">
-                STOP ALL SOUNDS
-            </button>
+            <div class="flex gap-4">
+                <button id="leaveBtn" class="btn-silver px-6 py-2 rounded font-bold transition flex items-center gap-2 bg-stone-700 hover:bg-stone-600 border border-stone-500">
+                    Leave Room
+                </button>
+                <button id="stopAllBtn" class="btn-red px-6 py-2 rounded font-bold transition flex items-center gap-2">
+                    STOP ALL SOUNDS
+                </button>
+            </div>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -92,6 +109,9 @@
         const hostBgmPlayer = new Audio();
         let isScrubbing = false;
         let activeBgmId = null;
+        let bgmIsPlaying = false;
+        
+        const hostSfxPlayers = {}; // Keep track of local SFX for pausing
 
         const joinOverlay = document.getElementById('joinOverlay');
         const mainContent = document.getElementById('mainContent');
@@ -100,6 +120,14 @@
         const userListDiv = document.getElementById('userList');
         const bgmList = document.getElementById('bgmList');
         const sfxList = document.getElementById('sfxList');
+        
+        // Fetch active rooms on load
+        fetch('/api/active_rooms').then(r=>r.json()).then(data => {
+            if(data.rooms.length > 0) {
+                document.getElementById('activeRoomsList').classList.remove('hidden');
+                document.getElementById('roomsContainer').innerHTML = data.rooms.map(r => `<span class="cursor-pointer font-bold text-amber-400 hover:underline mx-1" onclick="document.getElementById('roomIdInput').value='${r}'">${r}</span>`).join(', ');
+            }
+        });
 
         connectBtn.addEventListener('click', () => {
             myName = document.getElementById('hostNameInput').value.trim() || 'DM';
@@ -113,6 +141,14 @@
             connectWebSocket();
             fetchAudioFiles();
         });
+        
+        document.getElementById('leaveBtn').addEventListener('click', () => {
+            if(ws) ws.close();
+            hostBgmPlayer.pause();
+            Object.values(hostSfxPlayers).forEach(a => a.pause());
+            joinOverlay.classList.remove('hidden');
+            mainContent.classList.add('hidden');
+        });
 
         function connectWebSocket() {
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -122,9 +158,32 @@
                 const cmd = JSON.parse(e.data);
                 if (cmd.action === 'user_update') renderUsers(cmd.users);
                 if (cmd.action === 'refresh_list') fetchAudioFiles();
-                if (cmd.action === 'play_sfx') playLocalSfx(cmd.filename, cmd.volume); 
+                if (cmd.action === 'play_sfx') {
+                    playLocalSfx(cmd.filename, cmd.volume); 
+                    flashUser(cmd.sender);
+                }
+                if (cmd.action === 'pause_sfx') pauseLocalSfx(cmd.filename);
+                if (cmd.action === 'room_profile') document.getElementById('roomProfileImg').src = cmd.url;
             };
             ws.onclose = () => setTimeout(connectWebSocket, 3000);
+        }
+        
+        function changeRoomProfile() {
+            const url = prompt("Enter image URL for room profile:", document.getElementById('roomProfileImg').src);
+            if (url) {
+                document.getElementById('roomProfileImg').src = url;
+                ws.send(JSON.stringify({action: 'update_room_profile', url: url}));
+            }
+        }
+
+        function flashUser(userName) {
+            if(!userName || userName === myName) return;
+            const el = document.getElementById(`user_row_${userName}`);
+            if(el) {
+                el.classList.remove('user-flash');
+                void el.offsetWidth; // trigger reflow
+                el.classList.add('user-flash');
+            }
         }
 
         function renderUsers(users) {
@@ -136,7 +195,8 @@
             }
             guests.forEach(u => {
                 const div = document.createElement('div');
-                div.className = 'flex items-center justify-between bg-black/40 p-2 rounded border border-amber-900/30';
+                div.id = `user_row_${u.name}`;
+                div.className = 'flex items-center justify-between bg-black/40 p-2 rounded border border-amber-900/30 transition-all duration-300';
                 div.innerHTML = `
                     <span class="font-medium">${u.name}</span>
                     <label class="flex items-center gap-2 text-xs cursor-pointer">
@@ -149,7 +209,6 @@
             });
         }
 
-        // ================= FIX MULTI-UPLOAD ================= //
         uploadForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const filesInput = document.getElementById('audioFile');
@@ -160,7 +219,7 @@
             
             const fd = new FormData();
             for(let i=0; i<filesInput.files.length; i++) {
-                fd.append('files', filesInput.files[i]); // Ensure 'files' matches backend
+                fd.append('files', filesInput.files[i]);
             }
             fd.append('category', cat);
             fd.append('uploader_name', myName);
@@ -176,11 +235,10 @@
                 fetchAudioFiles();
                 ws.send(JSON.stringify({action: 'refresh_list'}));
             } else {
-                status.innerText = "Spell failed. 422 Unprocessable Entity - check file format.";
+                status.innerText = "Spell failed. Check file format.";
                 status.className = "mt-2 text-sm text-red-400";
             }
         });
-        // ==================================================== //
 
         async function fetchAudioFiles() {
             const res = await fetch('/api/audio_files');
@@ -225,11 +283,11 @@
                     </div>
                     <input type="range" id="seek_${f.id}" min="0" max="100" value="0" class="w-full h-1 range-gold cursor-pointer" 
                         oninput="isScrubbing=true" 
-                        onchange="isScrubbing=false; if(activeBgmId==${f.id}) scrubBgm(this.value, '${f.file_path}', document.getElementById('vol_${f.id}').value);">
+                        onchange="isScrubbing=false; scrubBgm(this.value, '${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id});">
                     <div class="flex gap-2 justify-end mt-1">
                         <button onclick="testLocalBgm('${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id})" class="text-xs px-3 py-1 bg-stone-600 rounded hover:bg-stone-500">Test</button>
                         <button onclick="roomPlayBgm('${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id})" class="text-xs px-3 py-1 bg-blue-800 rounded hover:bg-blue-700">▶ Play</button>
-                        <button onclick="roomPauseBgm()" class="text-xs px-3 py-1 bg-amber-800 rounded hover:bg-amber-700">❚❚ Pause</button>
+                        <button onclick="roomPauseBgm()" class="text-xs px-3 py-1 bg-amber-800 rounded hover:bg-amber-700">❚❚ Pause/Resume</button>
                         <button onclick="roomStopBgm()" class="text-xs px-3 py-1 bg-red-800 rounded hover:bg-red-700">■ Stop</button>
                     </div>
                 `;
@@ -261,8 +319,9 @@
                     <div class="flex items-center justify-between mt-1">
                         <input type="range" id="vol_${f.id}" min="0" max="1" step="0.01" value="${f.default_volume}" onchange="updateApi('volume', ${f.id}, this.value)" class="w-16 range-gold">
                         <div class="flex gap-1">
-                            <button onclick="playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value)" class="text-[10px] px-2 py-1 bg-stone-600 rounded">Test</button>
-                            <button onclick="ws.send(JSON.stringify({action:'play_sfx', filename:'${f.file_path}', volume:document.getElementById('vol_${f.id}').value})); playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value);" class="text-[10px] px-2 py-1 bg-teal-800 rounded font-bold">Play</button>
+                            <button onclick="playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value)" class="text-[10px] px-2 py-1 bg-stone-600 rounded text-white">Test</button>
+                            <button onclick="ws.send(JSON.stringify({action:'play_sfx', filename:'${f.file_path}', volume:document.getElementById('vol_${f.id}').value})); playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value);" class="text-[10px] px-2 py-1 bg-teal-800 rounded font-bold text-white">Play</button>
+                            <button onclick="ws.send(JSON.stringify({action:'pause_sfx', filename:'${f.file_path}'})); pauseLocalSfx('${f.file_path}');" class="text-[10px] px-2 py-1 bg-amber-800 rounded font-bold text-white">Pause</button>
                         </div>
                     </div>
                 `;
@@ -281,33 +340,46 @@
         hostBgmPlayer.addEventListener('timeupdate', () => {
             if(!isScrubbing && activeBgmId) {
                 const bar = document.getElementById(`seek_${activeBgmId}`);
-                if(bar) {
-                    bar.max = hostBgmPlayer.duration || 100;
+                if(bar && hostBgmPlayer.duration) {
+                    bar.max = hostBgmPlayer.duration;
                     bar.value = hostBgmPlayer.currentTime;
                 }
             }
         });
 
         function testLocalBgm(file, vol, id) {
-            activeBgmId = id;
-            hostBgmPlayer.src = `/static/audio/${file}`;
+            if(activeBgmId !== id) {
+                activeBgmId = id;
+                hostBgmPlayer.src = `/static/audio/${file}`;
+            }
             hostBgmPlayer.volume = vol;
             hostBgmPlayer.play();
+            bgmIsPlaying = true;
         }
 
         function roomPlayBgm(file, vol, id) {
-            testLocalBgm(file, vol, id); 
-            ws.send(JSON.stringify({action: 'play_bgm', filename: file, volume: vol}));
+            if(activeBgmId !== id || !bgmIsPlaying) {
+                testLocalBgm(file, vol, id); 
+                ws.send(JSON.stringify({action: 'play_bgm', filename: file, volume: vol}));
+            }
         }
 
         function roomPauseBgm() {
-            hostBgmPlayer.pause();
-            ws.send(JSON.stringify({action: 'pause_bgm'}));
+            if (bgmIsPlaying) {
+                hostBgmPlayer.pause();
+                bgmIsPlaying = false;
+                ws.send(JSON.stringify({action: 'pause_bgm'}));
+            } else if (activeBgmId) {
+                hostBgmPlayer.play();
+                bgmIsPlaying = true;
+                ws.send(JSON.stringify({action: 'resume_bgm'}));
+            }
         }
 
         function roomStopBgm() {
             hostBgmPlayer.pause();
             hostBgmPlayer.currentTime = 0;
+            bgmIsPlaying = false;
             ws.send(JSON.stringify({action: 'stop_bgm'}));
             if(activeBgmId) {
                 const bar = document.getElementById(`seek_${activeBgmId}`);
@@ -315,19 +387,39 @@
             }
         }
 
-        function scrubBgm(time, file, vol) {
+        function scrubBgm(time, file, vol, id) {
+            if (activeBgmId !== id) {
+                activeBgmId = id;
+                hostBgmPlayer.src = `/static/audio/${file}`;
+                hostBgmPlayer.volume = vol;
+            }
             hostBgmPlayer.currentTime = time;
-            ws.send(JSON.stringify({action: 'seek_bgm', time: time}));
+            ws.send(JSON.stringify({action: 'seek_bgm', time: time, filename: file, volume: vol}));
+            // If it was playing, keep it playing. If stopped, maybe don't play. For now, assume seek while active.
         }
 
         function playLocalSfx(file, vol) {
-            const a = new Audio(`/static/audio/${file}`);
+            let a = hostSfxPlayers[file];
+            if (!a) {
+                a = new Audio(`/static/audio/${file}`);
+                hostSfxPlayers[file] = a;
+                a.onended = () => { delete hostSfxPlayers[file]; };
+            }
             a.volume = vol;
-            a.play();
+            if(a.paused) a.play();
+        }
+        
+        function pauseLocalSfx(file) {
+            let a = hostSfxPlayers[file];
+            if (a) {
+                if (a.paused) a.play();
+                else a.pause();
+            }
         }
 
         document.getElementById('stopAllBtn').addEventListener('click', () => {
             roomStopBgm();
+            Object.values(hostSfxPlayers).forEach(a => { a.pause(); a.currentTime = 0; });
             ws.send(JSON.stringify({action: 'stop_all'}));
         });
 
