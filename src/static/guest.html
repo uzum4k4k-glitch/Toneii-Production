@@ -53,8 +53,8 @@
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div class="dnd-card p-6 flex flex-col items-center justify-center text-center">
-                <h3 class="text-sm font-semibold text-blue-400/70 mb-2 uppercase tracking-widest">Environment (BGM)</h3>
-                <p id="nowPlayingText" class="text-2xl font-medium text-white dnd-font truncate w-full">- Silence -</p>
+                <h3 class="text-sm font-semibold text-blue-400/70 mb-2 uppercase tracking-widest">Environment / Active BGM</h3>
+                <div id="nowPlayingText" class="text-lg font-medium text-white dnd-font w-full flex flex-wrap gap-2 justify-center items-center">- Silence -</div>
             </div>
 
             <div id="uploadPanel" class="dnd-card p-6 hidden">
@@ -82,12 +82,8 @@
         let room = "";
         let masterVol = 0.7;
         
-        const bgmPlayer = new Audio();
-        bgmPlayer.loop = true;
-        let currentBgmDefaultVol = 1.0;
-        let activeBgmFile = null;
-        let activeBgmDisplay = null;
-        
+        // Multi-BGM map: filename -> { audio, defaultVol, displayName, isPlaying, loop }
+        const activeBgms = {};
         const activeSfx = {};
 
         const joinOverlay = document.getElementById('joinOverlay');
@@ -105,7 +101,9 @@
 
         document.getElementById('masterVolume').addEventListener('input', (e) => {
             masterVol = parseFloat(e.target.value);
-            bgmPlayer.volume = currentBgmDefaultVol * masterVol;
+            Object.values(activeBgms).forEach(bgm => {
+                bgm.audio.volume = bgm.defaultVol * masterVol;
+            });
             Object.values(activeSfx).forEach(a => {
                 a.volume = (parseFloat(a.dataset.defaultVol) || 1.0) * masterVol;
             });
@@ -128,46 +126,100 @@
         
         document.getElementById('leaveBtn').addEventListener('click', () => {
             if(ws) ws.close();
-            bgmPlayer.pause();
+            stopAllBgms();
             Object.values(activeSfx).forEach(a => a.pause());
             joinOverlay.classList.remove('hidden');
             mainContent.classList.add('hidden');
         });
 
-        function syncBgmState(filename, volume, time, isPlaying, displayName) {
+        function updateNowPlayingDisplay() {
+            const entries = Object.values(activeBgms);
+            if (entries.length === 0) {
+                nowPlayingText.innerHTML = '- Silence -';
+                return;
+            }
+            nowPlayingText.innerHTML = entries.map(b => {
+                const loopIcon = b.loop ? ' 🔁' : '';
+                const statusTxt = b.isPlaying ? '' : ' (Paused)';
+                const badgeClass = b.isPlaying
+                    ? 'bg-blue-900/50 border-blue-500 text-blue-100'
+                    : 'bg-stone-800/60 border-stone-600 text-stone-400';
+                return `<span class="px-3 py-1 rounded-full border text-sm ${badgeClass}">🎵 ${b.displayName}${loopIcon}${statusTxt}</span>`;
+            }).join('');
+        }
+
+        function syncSingleBgm(filename, volume, time, isPlaying, displayName, loop) {
             if (!filename) return;
-            const isNewTrack = (activeBgmFile !== filename);
+            let entry = activeBgms[filename];
+            const isNewTrack = !entry;
+
             if (isNewTrack) {
-                activeBgmFile = filename;
-                bgmPlayer.src = `/static/audio/${encodeURIComponent(filename)}`;
+                const audio = new Audio(`/static/audio/${encodeURIComponent(filename)}`);
+                entry = {
+                    audio: audio,
+                    defaultVol: volume !== undefined ? parseFloat(volume) : 1.0,
+                    displayName: displayName || filename,
+                    isPlaying: Boolean(isPlaying),
+                    loop: Boolean(loop)
+                };
+                audio.loop = entry.loop;
+                audio.addEventListener('ended', () => {
+                    if (!entry.loop) {
+                        delete activeBgms[filename];
+                        updateNowPlayingDisplay();
+                    }
+                });
+                activeBgms[filename] = entry;
+            } else {
+                if (volume !== undefined && volume !== null) entry.defaultVol = parseFloat(volume);
+                if (displayName) entry.displayName = displayName;
+                if (loop !== undefined && loop !== null) {
+                    entry.loop = Boolean(loop);
+                    entry.audio.loop = entry.loop;
+                }
+                entry.isPlaying = Boolean(isPlaying);
             }
-            activeBgmDisplay = displayName || filename;
-            if (volume !== undefined && volume !== null) {
-                currentBgmDefaultVol = parseFloat(volume);
-            }
-            bgmPlayer.volume = currentBgmDefaultVol * masterVol;
+
+            entry.audio.volume = entry.defaultVol * masterVol;
 
             const applyPlayback = () => {
-                bgmPlayer.onloadedmetadata = null;
+                entry.audio.onloadedmetadata = null;
                 if (typeof time === 'number' && !isNaN(time)) {
-                    if (isNewTrack || Math.abs(bgmPlayer.currentTime - time) > 1.5 || bgmPlayer.paused) {
-                        try { bgmPlayer.currentTime = time; } catch(err) {}
+                    if (isNewTrack || Math.abs(entry.audio.currentTime - time) > 1.5 || entry.audio.paused) {
+                        try { entry.audio.currentTime = time; } catch(err) {}
                     }
                 }
-                if (isPlaying) {
-                    nowPlayingText.innerText = activeBgmDisplay;
-                    bgmPlayer.play().catch(err => console.warn("BGM play blocked:", err));
+                if (entry.isPlaying) {
+                    entry.audio.play().catch(err => console.warn("BGM play blocked:", err));
                 } else {
-                    nowPlayingText.innerText = `${activeBgmDisplay} (Paused)`;
-                    bgmPlayer.pause();
+                    entry.audio.pause();
                 }
+                updateNowPlayingDisplay();
             };
 
-            if (isNewTrack && bgmPlayer.readyState < 1) {
-                bgmPlayer.onloadedmetadata = applyPlayback;
+            if (isNewTrack && entry.audio.readyState < 1) {
+                entry.audio.onloadedmetadata = applyPlayback;
             } else {
                 applyPlayback();
             }
+        }
+
+        function stopSingleBgm(filename) {
+            if (activeBgms[filename]) {
+                activeBgms[filename].audio.pause();
+                activeBgms[filename].audio.currentTime = 0;
+                delete activeBgms[filename];
+                updateNowPlayingDisplay();
+            }
+        }
+
+        function stopAllBgms() {
+            Object.keys(activeBgms).forEach(fname => {
+                activeBgms[fname].audio.pause();
+                activeBgms[fname].audio.currentTime = 0;
+                delete activeBgms[fname];
+            });
+            updateNowPlayingDisplay();
         }
 
         function connectWebSocket() {
@@ -175,7 +227,6 @@
             ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${room}/${encodeURIComponent(myName)}/guest`);
             
             ws.onopen = () => {
-                // Request immediate state sync when connected/reconnected
                 ws.send(JSON.stringify({action: 'request_sync'}));
             };
 
@@ -190,57 +241,80 @@
                 
                 if (cmd.action === 'refresh_list') fetchAudioFiles();
                 
-                if (cmd.action === 'volume_bgm') {
-                    currentBgmDefaultVol = parseFloat(cmd.volume);
-                    bgmPlayer.volume = currentBgmDefaultVol * masterVol;
-                }
-                
                 if (cmd.action === 'room_profile') {
                     document.getElementById('roomProfileImg').src = cmd.url;
                 }
+
+                if (cmd.action === 'sync_all_bgm') {
+                    const incomingFiles = new Set((cmd.tracks || []).map(t => t.filename));
+                    Object.keys(activeBgms).forEach(fname => {
+                        if (!incomingFiles.has(fname)) stopSingleBgm(fname);
+                    });
+                    (cmd.tracks || []).forEach(t => {
+                        syncSingleBgm(t.filename, t.volume, t.time, t.is_playing, t.display_name, t.loop);
+                    });
+                }
                 
                 if (cmd.action === 'play_bgm' || cmd.action === 'sync_bgm') {
-                    syncBgmState(
+                    syncSingleBgm(
                         cmd.filename,
                         cmd.volume ?? 1.0,
                         cmd.time ?? 0,
                         cmd.is_playing !== undefined ? cmd.is_playing : true,
-                        cmd.display_name || cmd.filename
+                        cmd.display_name || cmd.filename,
+                        cmd.loop ?? false
                     );
                 }
                 if (cmd.action === 'pause_bgm') {
-                    if (typeof cmd.time === 'number') {
-                        try { bgmPlayer.currentTime = cmd.time; } catch(err) {}
-                    }
-                    bgmPlayer.pause();
-                    if (activeBgmDisplay) {
-                        nowPlayingText.innerText = `${activeBgmDisplay} (Paused)`;
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        if (typeof cmd.time === 'number') {
+                            try { entry.audio.currentTime = cmd.time; } catch(err) {}
+                        }
+                        entry.audio.pause();
+                        entry.isPlaying = false;
+                        updateNowPlayingDisplay();
                     }
                 }
                 if (cmd.action === 'resume_bgm') {
-                    if (typeof cmd.time === 'number') {
-                        try { bgmPlayer.currentTime = cmd.time; } catch(err) {}
-                    }
-                    bgmPlayer.play().catch(()=>{});
-                    if (activeBgmDisplay) {
-                        nowPlayingText.innerText = activeBgmDisplay;
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        if (typeof cmd.time === 'number') {
+                            try { entry.audio.currentTime = cmd.time; } catch(err) {}
+                        }
+                        entry.audio.play().catch(()=>{});
+                        entry.isPlaying = true;
+                        updateNowPlayingDisplay();
                     }
                 }
                 if (cmd.action === 'seek_bgm') {
-                    syncBgmState(
-                        cmd.filename || activeBgmFile,
-                        cmd.volume ?? currentBgmDefaultVol,
+                    const entry = activeBgms[cmd.filename];
+                    syncSingleBgm(
+                        cmd.filename,
+                        cmd.volume ?? (entry ? entry.defaultVol : 1.0),
                         cmd.time ?? 0,
-                        cmd.is_playing !== undefined ? cmd.is_playing : !bgmPlayer.paused,
-                        cmd.display_name || activeBgmDisplay
+                        cmd.is_playing !== undefined ? cmd.is_playing : (entry ? entry.isPlaying : true),
+                        cmd.display_name || (entry ? entry.displayName : cmd.filename),
+                        cmd.loop !== undefined ? cmd.loop : (entry ? entry.loop : false)
                     );
                 }
+                if (cmd.action === 'volume_bgm') {
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        entry.defaultVol = parseFloat(cmd.volume);
+                        entry.audio.volume = entry.defaultVol * masterVol;
+                    }
+                }
+                if (cmd.action === 'loop_bgm') {
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        entry.loop = Boolean(cmd.loop);
+                        entry.audio.loop = entry.loop;
+                        updateNowPlayingDisplay();
+                    }
+                }
                 if (cmd.action === 'stop_bgm') {
-                    bgmPlayer.pause();
-                    bgmPlayer.currentTime = 0;
-                    nowPlayingText.innerText = "- Silence -";
-                    activeBgmFile = null;
-                    activeBgmDisplay = null;
+                    stopSingleBgm(cmd.filename);
                 }
                 
                 if (cmd.action === 'play_sfx') {
@@ -255,12 +329,9 @@
                     }
                 }
                 if (cmd.action === 'stop_all') {
-                    bgmPlayer.pause();
+                    stopAllBgms();
                     Object.values(activeSfx).forEach(a => a.pause());
                     for (let key in activeSfx) delete activeSfx[key];
-                    nowPlayingText.innerText = "- Silence -";
-                    activeBgmFile = null;
-                    activeBgmDisplay = null;
                 }
             };
             ws.onclose = () => setTimeout(connectWebSocket, 3000);
