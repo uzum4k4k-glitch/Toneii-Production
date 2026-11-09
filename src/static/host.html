@@ -109,9 +109,12 @@
         const hostBgmPlayer = new Audio();
         let isScrubbing = false;
         let activeBgmId = null;
+        let activeBgmFile = null;
+        let activeBgmName = null;
         let bgmIsPlaying = false;
+        let bgmMode = 'none'; // 'none', 'test', 'live'
         
-        const hostSfxPlayers = {}; // Keep track of local SFX for pausing
+        const hostSfxPlayers = {};
 
         const joinOverlay = document.getElementById('joinOverlay');
         const mainContent = document.getElementById('mainContent');
@@ -121,7 +124,6 @@
         const bgmList = document.getElementById('bgmList');
         const sfxList = document.getElementById('sfxList');
         
-        // Fetch active rooms on load
         fetch('/api/active_rooms').then(r=>r.json()).then(data => {
             if(data.rooms.length > 0) {
                 document.getElementById('activeRoomsList').classList.remove('hidden');
@@ -159,11 +161,30 @@
                 if (cmd.action === 'user_update') renderUsers(cmd.users);
                 if (cmd.action === 'refresh_list') fetchAudioFiles();
                 if (cmd.action === 'play_sfx') {
-                    playLocalSfx(cmd.filename, cmd.volume); 
+                    if (cmd.sender !== myName) {
+                        playLocalSfx(cmd.filename, cmd.volume);
+                    }
                     flashUser(cmd.sender);
                 }
-                if (cmd.action === 'pause_sfx') pauseLocalSfx(cmd.filename);
+                if (cmd.action === 'pause_sfx') {
+                    if (cmd.sender !== myName) {
+                        pauseLocalSfx(cmd.filename);
+                    }
+                }
                 if (cmd.action === 'room_profile') document.getElementById('roomProfileImg').src = cmd.url;
+                if (cmd.action === 'request_sync') {
+                    // A player just joined or requested current BGM state
+                    if (activeBgmId && activeBgmFile && bgmMode === 'live') {
+                        ws.send(JSON.stringify({
+                            action: 'sync_bgm',
+                            filename: activeBgmFile,
+                            display_name: activeBgmName || activeBgmFile,
+                            volume: hostBgmPlayer.volume,
+                            time: hostBgmPlayer.currentTime || 0,
+                            is_playing: bgmIsPlaying
+                        }));
+                    }
+                }
             };
             ws.onclose = () => setTimeout(connectWebSocket, 3000);
         }
@@ -181,7 +202,7 @@
             const el = document.getElementById(`user_row_${userName}`);
             if(el) {
                 el.classList.remove('user-flash');
-                void el.offsetWidth; // trigger reflow
+                void el.offsetWidth;
                 el.classList.add('user-flash');
             }
         }
@@ -245,6 +266,7 @@
             const data = await res.json();
             renderBGM(data.files.filter(f => f.category === 'BGM'));
             renderSFX(data.files.filter(f => f.category === 'SFX'));
+            updateBgmButtonsUI();
         }
 
         async function updateApi(type, id, val) {
@@ -263,48 +285,90 @@
             ws.send(JSON.stringify({action: 'refresh_list'}));
         }
 
+        function formatTime(sec) {
+            if (!sec || isNaN(sec)) return "0:00";
+            const m = Math.floor(sec / 60);
+            const s = Math.floor(sec % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        }
+
         function renderBGM(files) {
             bgmList.innerHTML = files.length ? '' : '<p class="text-sm italic opacity-50">No BGM available.</p>';
             files.forEach(f => {
+                const safeName = f.display_name.replace(/'/g, "\'");
+                const safePath = f.file_path.replace(/'/g, "\'");
                 const div = document.createElement('div');
                 div.className = 'bg-black/40 p-3 rounded border border-amber-900/50 flex flex-col gap-2';
                 div.innerHTML = `
                     <div class="flex justify-between items-center">
                         <span class="font-bold tracking-wide">${f.display_name}</span>
                         <div class="flex gap-2">
-                            <button onclick="editName(${f.id}, '${f.display_name}')" class="text-xs px-2 py-1 bg-stone-700 hover:bg-stone-600 rounded">Edit</button>
+                            <button onclick="editName(${f.id}, '${safeName}')" class="text-xs px-2 py-1 bg-stone-700 hover:bg-stone-600 rounded">Edit</button>
                             <button onclick="deleteFile(${f.id})" class="text-xs px-2 py-1 bg-red-900 hover:bg-red-800 rounded">Del</button>
                         </div>
                     </div>
-                    <div class="flex items-center gap-2 text-xs">
-                        Vol: <input type="range" id="vol_${f.id}" min="0" max="1" step="0.01" value="${f.default_volume}" 
-                            oninput="liveVolumeUpdate(${f.id}, this.value)" 
-                            onchange="updateApi('volume', ${f.id}, this.value)" class="w-24 range-gold">
+                    <div class="flex items-center justify-between text-xs">
+                        <div class="flex items-center gap-2">
+                            Vol: <input type="range" id="vol_${f.id}" min="0" max="1" step="0.01" value="${f.default_volume}" 
+                                oninput="liveVolumeUpdate(${f.id}, this.value)" 
+                                onchange="updateApi('volume', ${f.id}, this.value)" class="w-24 range-gold">
+                        </div>
+                        <span id="time_label_${f.id}" class="text-[11px] text-amber-200/70 font-mono">0:00 / 0:00</span>
                     </div>
-                    <input type="range" id="seek_${f.id}" min="0" max="100" value="0" class="w-full h-1 range-gold cursor-pointer" 
+                    <input type="range" id="seek_${f.id}" min="0" max="100" step="0.1" value="0" class="w-full h-1 range-gold cursor-pointer" 
                         oninput="isScrubbing=true" 
-                        onchange="isScrubbing=false; scrubBgm(this.value, '${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id});">
+                        onchange="isScrubbing=false; scrubBgm(this.value, '${safePath}', document.getElementById('vol_${f.id}').value, ${f.id}, '${safeName}');">
                     <div class="flex gap-2 justify-end mt-1">
-                        <button onclick="testLocalBgm('${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id})" class="text-xs px-3 py-1 bg-stone-600 rounded hover:bg-stone-500">Test</button>
-                        <button onclick="roomPlayBgm('${f.file_path}', document.getElementById('vol_${f.id}').value, ${f.id})" class="text-xs px-3 py-1 bg-blue-800 rounded hover:bg-blue-700">▶ Play</button>
-                        <button onclick="roomPauseBgm()" class="text-xs px-3 py-1 bg-amber-800 rounded hover:bg-amber-700">❚❚ Pause/Resume</button>
-                        <button onclick="roomStopBgm()" class="text-xs px-3 py-1 bg-red-800 rounded hover:bg-red-700">■ Stop</button>
+                        <button id="test_btn_${f.id}" data-testid="${f.id}" onclick="toggleTestBgm('${safePath}', document.getElementById('vol_${f.id}').value, ${f.id}, '${safeName}')" class="text-xs px-3 py-1 bg-stone-600 rounded hover:bg-stone-500 transition">🎧 Test</button>
+                        <button id="play_btn_${f.id}" data-playid="${f.id}" onclick="toggleRoomBgm('${safePath}', document.getElementById('vol_${f.id}').value, ${f.id}, '${safeName}')" class="text-xs px-4 py-1 bg-blue-800 rounded hover:bg-blue-700 font-semibold transition">▶ Play</button>
+                        <button onclick="roomStopBgm(${f.id})" class="text-xs px-3 py-1 bg-red-800 rounded hover:bg-red-700 transition">■ Stop</button>
                     </div>
                 `;
                 bgmList.appendChild(div);
             });
         }
 
+        function updateBgmButtonsUI() {
+            document.querySelectorAll('[data-playid]').forEach(btn => {
+                const id = parseInt(btn.getAttribute('data-playid'));
+                if (activeBgmId === id && bgmMode === 'live' && bgmIsPlaying) {
+                    btn.innerText = '❚❚ Pause';
+                    btn.className = 'text-xs px-4 py-1 bg-amber-700 rounded hover:bg-amber-600 font-semibold transition';
+                } else if (activeBgmId === id && bgmMode === 'live' && !bgmIsPlaying && hostBgmPlayer.currentTime > 0) {
+                    btn.innerText = '▶ Resume';
+                    btn.className = 'text-xs px-4 py-1 bg-blue-800 rounded hover:bg-blue-700 font-semibold transition';
+                } else {
+                    btn.innerText = '▶ Play';
+                    btn.className = 'text-xs px-4 py-1 bg-blue-800 rounded hover:bg-blue-700 font-semibold transition';
+                }
+            });
+
+            document.querySelectorAll('[data-testid]').forEach(btn => {
+                const id = parseInt(btn.getAttribute('data-testid'));
+                if (activeBgmId === id && bgmMode === 'test' && bgmIsPlaying) {
+                    btn.innerText = '❚❚ Pause Test';
+                    btn.className = 'text-xs px-3 py-1 bg-amber-800 rounded hover:bg-amber-700 transition';
+                } else {
+                    btn.innerText = '🎧 Test';
+                    btn.className = 'text-xs px-3 py-1 bg-stone-600 rounded hover:bg-stone-500 transition';
+                }
+            });
+        }
+
         function liveVolumeUpdate(id, val) {
             if(activeBgmId == id) {
-                hostBgmPlayer.volume = val;
-                ws.send(JSON.stringify({action: 'volume_bgm', volume: val}));
+                hostBgmPlayer.volume = parseFloat(val);
+                if (bgmMode === 'live') {
+                    ws.send(JSON.stringify({action: 'volume_bgm', volume: parseFloat(val)}));
+                }
             }
         }
 
         function renderSFX(files) {
             sfxList.innerHTML = files.length ? '' : '<p class="text-sm italic opacity-50">No SFX available.</p>';
             files.forEach(f => {
+                const safeName = f.display_name.replace(/'/g, "\'");
+                const safePath = f.file_path.replace(/'/g, "\'");
                 const uploaderTxt = f.uploader_name !== 'Host' ? `<span class="text-[10px] text-teal-300/70 ml-2">(${f.uploader_name})</span>` : '';
                 const div = document.createElement('div');
                 div.className = 'bg-black/40 p-3 rounded border border-amber-900/50 flex flex-col gap-2';
@@ -312,16 +376,16 @@
                     <div class="flex justify-between items-center">
                         <span class="font-bold truncate" title="${f.display_name}">${f.display_name}${uploaderTxt}</span>
                         <div class="flex gap-1 shrink-0">
-                            <button onclick="editName(${f.id}, '${f.display_name}')" class="text-[10px] px-1.5 py-0.5 bg-stone-700 rounded">Edit</button>
+                            <button onclick="editName(${f.id}, '${safeName}')" class="text-[10px] px-1.5 py-0.5 bg-stone-700 rounded">Edit</button>
                             <button onclick="deleteFile(${f.id})" class="text-[10px] px-1.5 py-0.5 bg-red-900 rounded">Del</button>
                         </div>
                     </div>
                     <div class="flex items-center justify-between mt-1">
                         <input type="range" id="vol_${f.id}" min="0" max="1" step="0.01" value="${f.default_volume}" onchange="updateApi('volume', ${f.id}, this.value)" class="w-16 range-gold">
                         <div class="flex gap-1">
-                            <button onclick="playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value)" class="text-[10px] px-2 py-1 bg-stone-600 rounded text-white">Test</button>
-                            <button onclick="ws.send(JSON.stringify({action:'play_sfx', filename:'${f.file_path}', volume:document.getElementById('vol_${f.id}').value})); playLocalSfx('${f.file_path}', document.getElementById('vol_${f.id}').value);" class="text-[10px] px-2 py-1 bg-teal-800 rounded font-bold text-white">Play</button>
-                            <button onclick="ws.send(JSON.stringify({action:'pause_sfx', filename:'${f.file_path}'})); pauseLocalSfx('${f.file_path}');" class="text-[10px] px-2 py-1 bg-amber-800 rounded font-bold text-white">Pause</button>
+                            <button onclick="playLocalSfx('${safePath}', document.getElementById('vol_${f.id}').value)" class="text-[10px] px-2 py-1 bg-stone-600 rounded text-white">Test</button>
+                            <button onclick="ws.send(JSON.stringify({action:'play_sfx', filename:'${safePath}', volume:document.getElementById('vol_${f.id}').value, sender:myName})); playLocalSfx('${safePath}', document.getElementById('vol_${f.id}').value);" class="text-[10px] px-2 py-1 bg-teal-800 rounded font-bold text-white">▶ Play</button>
+                            <button onclick="ws.send(JSON.stringify({action:'pause_sfx', filename:'${safePath}', sender:myName})); pauseLocalSfx('${safePath}');" class="text-[10px] px-2 py-1 bg-amber-800 rounded font-bold text-white">❚❚ Pause</button>
                         </div>
                     </div>
                 `;
@@ -340,73 +404,146 @@
         hostBgmPlayer.addEventListener('timeupdate', () => {
             if(!isScrubbing && activeBgmId) {
                 const bar = document.getElementById(`seek_${activeBgmId}`);
+                const label = document.getElementById(`time_label_${activeBgmId}`);
                 if(bar && hostBgmPlayer.duration) {
                     bar.max = hostBgmPlayer.duration;
                     bar.value = hostBgmPlayer.currentTime;
                 }
+                if(label && hostBgmPlayer.duration) {
+                    label.innerText = `${formatTime(hostBgmPlayer.currentTime)} / ${formatTime(hostBgmPlayer.duration)}`;
+                }
             }
         });
 
-        function testLocalBgm(file, vol, id) {
-            if(activeBgmId !== id) {
-                activeBgmId = id;
-                hostBgmPlayer.src = `/static/audio/${file}`;
-            }
-            hostBgmPlayer.volume = vol;
-            hostBgmPlayer.play();
-            bgmIsPlaying = true;
-        }
-
-        function roomPlayBgm(file, vol, id) {
-            if(activeBgmId !== id || !bgmIsPlaying) {
-                testLocalBgm(file, vol, id); 
-                ws.send(JSON.stringify({action: 'play_bgm', filename: file, volume: vol}));
-            }
-        }
-
-        function roomPauseBgm() {
-            if (bgmIsPlaying) {
+        function toggleTestBgm(file, vol, id, displayName) {
+            // If currently playing this track in test mode, pause it
+            if (activeBgmId === id && bgmMode === 'test' && bgmIsPlaying) {
                 hostBgmPlayer.pause();
                 bgmIsPlaying = false;
-                ws.send(JSON.stringify({action: 'pause_bgm'}));
-            } else if (activeBgmId) {
-                hostBgmPlayer.play();
-                bgmIsPlaying = true;
-                ws.send(JSON.stringify({action: 'resume_bgm'}));
+                updateBgmButtonsUI();
+                return;
             }
+            // If switching from live mode, stop room BGM first so players aren't out of sync
+            if (bgmMode === 'live') {
+                ws.send(JSON.stringify({action: 'stop_bgm'}));
+            }
+            if (activeBgmId !== id) {
+                if (activeBgmId) {
+                    const oldBar = document.getElementById(`seek_${activeBgmId}`);
+                    if (oldBar) oldBar.value = 0;
+                }
+                activeBgmId = id;
+                activeBgmFile = file;
+                activeBgmName = displayName || file;
+                hostBgmPlayer.src = `/static/audio/${encodeURIComponent(file)}`;
+            }
+            bgmMode = 'test';
+            hostBgmPlayer.volume = parseFloat(vol);
+            hostBgmPlayer.play();
+            bgmIsPlaying = true;
+            updateBgmButtonsUI();
         }
 
-        function roomStopBgm() {
+        function toggleRoomBgm(file, vol, id, displayName) {
+            // Case 1: This exact track is currently playing live -> Pause it!
+            if (activeBgmId === id && bgmMode === 'live' && bgmIsPlaying) {
+                hostBgmPlayer.pause();
+                bgmIsPlaying = false;
+                ws.send(JSON.stringify({
+                    action: 'pause_bgm',
+                    filename: file,
+                    time: hostBgmPlayer.currentTime || 0
+                }));
+                updateBgmButtonsUI();
+                return;
+            }
+
+            // Case 2: Switching to a different track -> Load new track from 0:00
+            if (activeBgmId !== id) {
+                if (activeBgmId) {
+                    const oldBar = document.getElementById(`seek_${activeBgmId}`);
+                    if (oldBar) oldBar.value = 0;
+                    const oldLabel = document.getElementById(`time_label_${activeBgmId}`);
+                    if (oldLabel) oldLabel.innerText = "0:00 / 0:00";
+                }
+                activeBgmId = id;
+                activeBgmFile = file;
+                activeBgmName = displayName || file;
+                hostBgmPlayer.src = `/static/audio/${encodeURIComponent(file)}`;
+                hostBgmPlayer.currentTime = 0;
+            }
+
+            // Case 3: Play or Resume from exact current position (including if paused or transitioning from test)
+            bgmMode = 'live';
+            hostBgmPlayer.volume = parseFloat(vol);
+            const currentPos = hostBgmPlayer.currentTime || 0;
+            hostBgmPlayer.play();
+            bgmIsPlaying = true;
+
+            ws.send(JSON.stringify({
+                action: 'play_bgm',
+                filename: file,
+                display_name: displayName || file,
+                volume: parseFloat(vol),
+                time: currentPos,
+                is_playing: true
+            }));
+            updateBgmButtonsUI();
+        }
+
+        function roomStopBgm(targetId = null) {
+            if (targetId && activeBgmId && targetId !== activeBgmId) return;
             hostBgmPlayer.pause();
             hostBgmPlayer.currentTime = 0;
             bgmIsPlaying = false;
-            ws.send(JSON.stringify({action: 'stop_bgm'}));
+            if (bgmMode === 'live') {
+                ws.send(JSON.stringify({action: 'stop_bgm'}));
+            }
+            bgmMode = 'none';
             if(activeBgmId) {
                 const bar = document.getElementById(`seek_${activeBgmId}`);
                 if(bar) bar.value = 0;
+                const label = document.getElementById(`time_label_${activeBgmId}`);
+                if(label && hostBgmPlayer.duration) {
+                    label.innerText = `0:00 / ${formatTime(hostBgmPlayer.duration)}`;
+                }
             }
+            updateBgmButtonsUI();
         }
 
-        function scrubBgm(time, file, vol, id) {
+        function scrubBgm(time, file, vol, id, displayName) {
+            const seekTime = parseFloat(time) || 0;
             if (activeBgmId !== id) {
                 activeBgmId = id;
-                hostBgmPlayer.src = `/static/audio/${file}`;
-                hostBgmPlayer.volume = vol;
+                activeBgmFile = file;
+                activeBgmName = displayName || file;
+                hostBgmPlayer.src = `/static/audio/${encodeURIComponent(file)}`;
+                hostBgmPlayer.volume = parseFloat(vol);
             }
-            hostBgmPlayer.currentTime = time;
-            ws.send(JSON.stringify({action: 'seek_bgm', time: time, filename: file, volume: vol}));
-            // If it was playing, keep it playing. If stopped, maybe don't play. For now, assume seek while active.
+            hostBgmPlayer.currentTime = seekTime;
+            if (bgmMode === 'live') {
+                ws.send(JSON.stringify({
+                    action: 'seek_bgm',
+                    time: seekTime,
+                    filename: file,
+                    display_name: displayName || file,
+                    volume: parseFloat(vol),
+                    is_playing: bgmIsPlaying
+                }));
+            }
         }
 
         function playLocalSfx(file, vol) {
             let a = hostSfxPlayers[file];
             if (!a) {
-                a = new Audio(`/static/audio/${file}`);
+                a = new Audio(`/static/audio/${encodeURIComponent(file)}`);
                 hostSfxPlayers[file] = a;
                 a.onended = () => { delete hostSfxPlayers[file]; };
+            } else if (!a.paused) {
+                a.currentTime = 0;
             }
-            a.volume = vol;
-            if(a.paused) a.play();
+            a.volume = parseFloat(vol);
+            a.play();
         }
         
         function pauseLocalSfx(file) {

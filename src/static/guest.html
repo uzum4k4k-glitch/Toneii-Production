@@ -86,6 +86,7 @@
         bgmPlayer.loop = true;
         let currentBgmDefaultVol = 1.0;
         let activeBgmFile = null;
+        let activeBgmDisplay = null;
         
         const activeSfx = {};
 
@@ -95,7 +96,6 @@
         const nowPlayingText = document.getElementById('nowPlayingText');
         const sfxList = document.getElementById('sfxList');
 
-        // Fetch active rooms on load
         fetch('/api/active_rooms').then(r=>r.json()).then(data => {
             if(data.rooms.length > 0) {
                 document.getElementById('activeRoomsList').classList.remove('hidden');
@@ -134,10 +134,51 @@
             mainContent.classList.add('hidden');
         });
 
+        function syncBgmState(filename, volume, time, isPlaying, displayName) {
+            if (!filename) return;
+            const isNewTrack = (activeBgmFile !== filename);
+            if (isNewTrack) {
+                activeBgmFile = filename;
+                bgmPlayer.src = `/static/audio/${encodeURIComponent(filename)}`;
+            }
+            activeBgmDisplay = displayName || filename;
+            if (volume !== undefined && volume !== null) {
+                currentBgmDefaultVol = parseFloat(volume);
+            }
+            bgmPlayer.volume = currentBgmDefaultVol * masterVol;
+
+            const applyPlayback = () => {
+                bgmPlayer.onloadedmetadata = null;
+                if (typeof time === 'number' && !isNaN(time)) {
+                    if (isNewTrack || Math.abs(bgmPlayer.currentTime - time) > 1.5 || bgmPlayer.paused) {
+                        try { bgmPlayer.currentTime = time; } catch(err) {}
+                    }
+                }
+                if (isPlaying) {
+                    nowPlayingText.innerText = activeBgmDisplay;
+                    bgmPlayer.play().catch(err => console.warn("BGM play blocked:", err));
+                } else {
+                    nowPlayingText.innerText = `${activeBgmDisplay} (Paused)`;
+                    bgmPlayer.pause();
+                }
+            };
+
+            if (isNewTrack && bgmPlayer.readyState < 1) {
+                bgmPlayer.onloadedmetadata = applyPlayback;
+            } else {
+                applyPlayback();
+            }
+        }
+
         function connectWebSocket() {
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${room}/${encodeURIComponent(myName)}/guest`);
             
+            ws.onopen = () => {
+                // Request immediate state sync when connected/reconnected
+                ws.send(JSON.stringify({action: 'request_sync'}));
+            };
+
             ws.onmessage = (e) => {
                 const cmd = JSON.parse(e.data);
                 
@@ -150,7 +191,7 @@
                 if (cmd.action === 'refresh_list') fetchAudioFiles();
                 
                 if (cmd.action === 'volume_bgm') {
-                    currentBgmDefaultVol = cmd.volume;
+                    currentBgmDefaultVol = parseFloat(cmd.volume);
                     bgmPlayer.volume = currentBgmDefaultVol * masterVol;
                 }
                 
@@ -158,39 +199,68 @@
                     document.getElementById('roomProfileImg').src = cmd.url;
                 }
                 
-                if (cmd.action === 'play_bgm') {
-                    activeBgmFile = cmd.filename;
-                    bgmPlayer.src = `/static/audio/${cmd.filename}`;
-                    currentBgmDefaultVol = cmd.volume || 1.0;
-                    bgmPlayer.volume = currentBgmDefaultVol * masterVol;
-                    bgmPlayer.play();
-                    nowPlayingText.innerText = cmd.filename;
+                if (cmd.action === 'play_bgm' || cmd.action === 'sync_bgm') {
+                    syncBgmState(
+                        cmd.filename,
+                        cmd.volume ?? 1.0,
+                        cmd.time ?? 0,
+                        cmd.is_playing !== undefined ? cmd.is_playing : true,
+                        cmd.display_name || cmd.filename
+                    );
                 }
-                if (cmd.action === 'pause_bgm') bgmPlayer.pause();
-                if (cmd.action === 'resume_bgm') bgmPlayer.play();
-                if (cmd.action === 'seek_bgm') {
-                    if (activeBgmFile !== cmd.filename) {
-                        activeBgmFile = cmd.filename;
-                        bgmPlayer.src = `/static/audio/${cmd.filename}`;
-                        currentBgmDefaultVol = cmd.volume || 1.0;
-                        bgmPlayer.volume = currentBgmDefaultVol * masterVol;
+                if (cmd.action === 'pause_bgm') {
+                    if (typeof cmd.time === 'number') {
+                        try { bgmPlayer.currentTime = cmd.time; } catch(err) {}
                     }
-                    bgmPlayer.currentTime = cmd.time;
+                    bgmPlayer.pause();
+                    if (activeBgmDisplay) {
+                        nowPlayingText.innerText = `${activeBgmDisplay} (Paused)`;
+                    }
                 }
-                if (cmd.action === 'stop_bgm') { bgmPlayer.pause(); bgmPlayer.currentTime = 0; nowPlayingText.innerText = "- Silence -"; activeBgmFile = null; }
+                if (cmd.action === 'resume_bgm') {
+                    if (typeof cmd.time === 'number') {
+                        try { bgmPlayer.currentTime = cmd.time; } catch(err) {}
+                    }
+                    bgmPlayer.play().catch(()=>{});
+                    if (activeBgmDisplay) {
+                        nowPlayingText.innerText = activeBgmDisplay;
+                    }
+                }
+                if (cmd.action === 'seek_bgm') {
+                    syncBgmState(
+                        cmd.filename || activeBgmFile,
+                        cmd.volume ?? currentBgmDefaultVol,
+                        cmd.time ?? 0,
+                        cmd.is_playing !== undefined ? cmd.is_playing : !bgmPlayer.paused,
+                        cmd.display_name || activeBgmDisplay
+                    );
+                }
+                if (cmd.action === 'stop_bgm') {
+                    bgmPlayer.pause();
+                    bgmPlayer.currentTime = 0;
+                    nowPlayingText.innerText = "- Silence -";
+                    activeBgmFile = null;
+                    activeBgmDisplay = null;
+                }
                 
                 if (cmd.action === 'play_sfx') {
-                    playSfxLocally(cmd.filename, cmd.volume);
+                    if (cmd.sender !== myName) {
+                        playSfxLocally(cmd.filename, cmd.volume);
+                    }
                     flashBtn(cmd.filename);
                 }
                 if (cmd.action === 'pause_sfx') {
-                    pauseSfxLocally(cmd.filename);
+                    if (cmd.sender !== myName) {
+                        pauseSfxLocally(cmd.filename);
+                    }
                 }
                 if (cmd.action === 'stop_all') {
                     bgmPlayer.pause();
                     Object.values(activeSfx).forEach(a => a.pause());
                     for (let key in activeSfx) delete activeSfx[key];
                     nowPlayingText.innerText = "- Silence -";
+                    activeBgmFile = null;
+                    activeBgmDisplay = null;
                 }
             };
             ws.onclose = () => setTimeout(connectWebSocket, 3000);
@@ -208,13 +278,15 @@
         function playSfxLocally(file, vol) {
             let a = activeSfx[file];
             if (!a) {
-                a = new Audio(`/static/audio/${file}`);
+                a = new Audio(`/static/audio/${encodeURIComponent(file)}`);
                 a.dataset.defaultVol = vol || 1.0;
                 activeSfx[file] = a;
                 a.onended = () => { delete activeSfx[file]; };
+            } else if (!a.paused) {
+                a.currentTime = 0;
             }
             a.volume = parseFloat(a.dataset.defaultVol) * masterVol;
-            if(a.paused) a.play();
+            a.play();
         }
         
         function pauseSfxLocally(file) {
@@ -262,21 +334,21 @@
             
             sfxList.innerHTML = '';
             sfxs.forEach(f => {
+                const safePath = f.file_path.replace(/'/g, "\'");
                 const isMine = f.uploader_name === myName;
                 const uploaderTxt = f.uploader_name !== 'Host' ? `<br><span class="text-[10px] text-blue-400 font-normal">By: ${f.uploader_name}</span>` : '';
                 const btn = document.createElement('div');
                 btn.dataset.filename = f.file_path;
                 btn.className = 'bg-black/30 p-2 rounded border border-blue-900/50 hover:bg-blue-900/20 transition text-center relative shadow-md shadow-black flex flex-col items-center justify-between min-h-[90px]';
                 
-                let html = `<span class="font-bold text-sm tracking-wide text-blue-100 cursor-pointer w-full" onclick="ws.send(JSON.stringify({action: 'play_sfx', filename: '${f.file_path}', volume: ${f.default_volume}})); playSfxLocally('${f.file_path}', ${f.default_volume});">${f.display_name}${uploaderTxt}</span>`;
+                let html = `<span class="font-bold text-sm tracking-wide text-blue-100 cursor-pointer w-full" onclick="ws.send(JSON.stringify({action: 'play_sfx', filename: '${safePath}', volume: ${f.default_volume}, sender: myName})); playSfxLocally('${safePath}', ${f.default_volume});">${f.display_name}${uploaderTxt}</span>`;
                 
                 if(isMine) {
                     html += `<button onclick="deleteMyFile(event, ${f.id})" class="absolute top-1 right-1 text-[10px] bg-red-900/80 px-1 rounded hover:bg-red-700 z-10">x</button>`;
                 }
                 
-                // Add Pause button for SFX
                 html += `<div class="mt-2 w-full flex justify-center gap-1 border-t border-blue-900/30 pt-1">
-                    <button onclick="ws.send(JSON.stringify({action: 'pause_sfx', filename: '${f.file_path}'})); pauseSfxLocally('${f.file_path}');" class="text-[10px] bg-amber-800/80 hover:bg-amber-700 px-2 py-1 rounded w-full">Pause/Resume</button>
+                    <button onclick="ws.send(JSON.stringify({action: 'pause_sfx', filename: '${safePath}', sender: myName})); pauseSfxLocally('${safePath}');" class="text-[10px] bg-amber-800/80 hover:bg-amber-700 px-2 py-1 rounded w-full">❚❚ Pause/Resume</button>
                 </div>`;
                 
                 btn.innerHTML = html;
