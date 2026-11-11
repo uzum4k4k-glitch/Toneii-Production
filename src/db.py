@@ -3,10 +3,12 @@ from typing import Generator
 
 DATABASE_URL = "toneii.db"
 
+
 def init_db():
     conn = sqlite3.connect(DATABASE_URL)
     cursor = conn.cursor()
-    cursor.execute('''
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS audio_files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_path TEXT NOT NULL,
@@ -14,13 +16,20 @@ def init_db():
             category TEXT NOT NULL,
             default_volume REAL DEFAULT 1.0
         )
-    ''')
-    try:
-        cursor.execute("ALTER TABLE audio_files ADD COLUMN uploader_name TEXT DEFAULT 'Host'")
-    except sqlite3.OperationalError:
-        pass
+        """
+    )
+    for statement in (
+        "ALTER TABLE audio_files ADD COLUMN uploader_name TEXT DEFAULT 'Host'",
+        "ALTER TABLE audio_files ADD COLUMN storage_type TEXT DEFAULT 'local'",
+    ):
+        try:
+            cursor.execute(statement)
+        except sqlite3.OperationalError:
+            # SQLite reports a duplicate-column error if this migration already ran.
+            pass
     conn.commit()
     conn.close()
+
 
 def get_db() -> Generator[sqlite3.Connection, None, None]:
     conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
