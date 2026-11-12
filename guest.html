@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Toneii - Player Dashboard (Guest)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #111417; background-image: radial-gradient(circle at center, #1b222a 0%, #0d1014 100%); }
+        h1, h2, h3, .dnd-font { font-family: 'Cinzel', serif; }
+        .dnd-card { background: rgba(20, 25, 30, 0.85); border: 1px solid #2d4f73; box-shadow: 0 4px 15px rgba(0,0,0,0.5); border-radius: 6px; }
+        .btn-silver { background: linear-gradient(to bottom, #7a8d9e, #3a4b5c); color: #fff; border: 1px solid #a3b8cc; text-shadow: 1px 1px 2px #000; }
+        .btn-silver:hover { background: linear-gradient(to bottom, #a3b8cc, #7a8d9e); }
+        .range-blue { accent-color: #5c8ab8; }
+        
+        .user-flash { animation: flash-blue 1s ease-out; }
+        @keyframes flash-blue { 0% { box-shadow: 0 0 15px #5c8ab8, inset 0 0 10px #5c8ab8; border-color: #5c8ab8; } 100% { box-shadow: none; border-color: rgba(45, 79, 115, 0.5); } }
+    </style>
+</head>
+<body class="text-blue-100 min-h-screen flex flex-col p-6">
+    
+    <div id="joinOverlay" class="fixed inset-0 bg-black/95 flex flex-col items-center justify-center z-50">
+        <h1 class="text-5xl font-bold mb-2 text-blue-400 tracking-wider">TONEII</h1>
+        <p class="mb-8 text-blue-200/60 font-serif italic text-lg">Player Dashboard</p>
+        
+        <div class="flex flex-col gap-4 mb-8 w-80">
+            <input type="text" id="guestNameInput" class="px-4 py-3 rounded bg-black/50 text-blue-100 border border-blue-800/50 focus:outline-none focus:border-blue-400 text-center" placeholder="Character / Your Name">
+            <input type="text" id="roomIdInput" value="Tavern-01" class="px-4 py-3 rounded bg-black/50 text-blue-100 border border-blue-800/50 focus:outline-none focus:border-blue-400 text-center" placeholder="Enter Room ID">
+            <div id="activeRoomsList" class="text-xs text-blue-200/60 text-center mt-2 max-h-20 overflow-y-auto hidden">
+                <p>Active Rooms: <span id="roomsContainer"></span></p>
+            </div>
+        </div>
+        
+        <button id="joinBtn" class="btn-silver font-bold py-3 px-12 rounded text-xl shadow-lg transition">Join Session</button>
+    </div>
+
+    <div id="mainContent" class="hidden max-w-4xl mx-auto w-full flex flex-col gap-6">
+        <div class="flex justify-between items-end border-b border-blue-800/30 pb-4">
+            <div class="flex items-center gap-4">
+                <img id="roomProfileImg" src="https://via.placeholder.com/150/111417/5c8ab8?text=DnD" class="w-16 h-16 rounded-full border-2 border-blue-700 object-cover">
+                <div>
+                    <h1 class="text-3xl font-bold text-blue-400">Player Dashboard</h1>
+                    <p id="connectionStatus" class="mt-1 text-sm text-green-400">Connected</p>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <button id="leaveBtn" class="text-xs bg-red-900/50 hover:bg-red-800 border border-red-900 text-red-200 px-3 py-1 rounded transition mr-4">Leave Room</button>
+                <span class="text-sm font-semibold text-blue-300">My Earplugs (Vol)</span>
+                <input type="range" id="masterVolume" min="0" max="1" step="0.01" value="0.7" class="w-32 range-blue cursor-pointer">
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="dnd-card p-6 flex flex-col items-center justify-center text-center">
+                <h3 class="text-sm font-semibold text-blue-400/70 mb-2 uppercase tracking-widest">Environment / Active BGM</h3>
+                <div id="nowPlayingText" class="text-lg font-medium text-white dnd-font w-full flex flex-wrap gap-2 justify-center items-center">- Silence -</div>
+            </div>
+
+            <div id="uploadPanel" class="dnd-card p-6 hidden">
+                <h3 class="text-lg font-semibold text-blue-300 mb-3 flex items-center gap-2">
+                    <span>✨ Cast Audio Spell</span>
+                </h3>
+                <form id="uploadForm" class="flex flex-col gap-3">
+                    <input type="file" id="audioFile" accept="audio/*" class="text-xs bg-black/30 p-2 rounded border border-blue-900/50" multiple required>
+                    <button type="submit" class="btn-silver py-2 rounded font-medium text-sm">Upload SFX</button>
+                </form>
+                <p id="uploadStatus" class="mt-2 text-xs text-center"></p>
+            </div>
+        </div>
+
+        <div class="dnd-card p-6">
+            <h2 class="text-xl font-semibold text-blue-300 mb-4 dnd-font border-b border-blue-800/30 pb-2">Sound Effects</h2>
+            <div id="sfxList" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-[500px] overflow-y-auto pr-2">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let myName = "";
+        let room = "";
+        let masterVol = 0.7;
+        
+        // Multi-BGM map: filename -> { audio, defaultVol, displayName, isPlaying, loop }
+        const activeBgms = {};
+        const activeSfx = {};
+
+        const joinOverlay = document.getElementById('joinOverlay');
+        const mainContent = document.getElementById('mainContent');
+        const uploadPanel = document.getElementById('uploadPanel');
+        const nowPlayingText = document.getElementById('nowPlayingText');
+        const sfxList = document.getElementById('sfxList');
+
+        fetch('/api/active_rooms').then(r=>r.json()).then(data => {
+            if(data.rooms.length > 0) {
+                document.getElementById('activeRoomsList').classList.remove('hidden');
+                document.getElementById('roomsContainer').innerHTML = data.rooms.map(r => `<span class="cursor-pointer font-bold text-blue-400 hover:underline mx-1" onclick="document.getElementById('roomIdInput').value='${r}'">${r}</span>`).join(', ');
+            }
+        });
+
+        document.getElementById('masterVolume').addEventListener('input', (e) => {
+            masterVol = parseFloat(e.target.value);
+            Object.values(activeBgms).forEach(bgm => {
+                bgm.audio.volume = bgm.defaultVol * masterVol;
+            });
+            Object.values(activeSfx).forEach(a => {
+                a.volume = (parseFloat(a.dataset.defaultVol) || 1.0) * masterVol;
+            });
+        });
+
+        document.getElementById('joinBtn').addEventListener('click', () => {
+            myName = document.getElementById('guestNameInput').value.trim();
+            room = document.getElementById('roomIdInput').value.trim();
+            if (!myName || !room) return alert("Please enter Name and Room ID");
+            
+            new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA').play().catch(()=>{});
+            
+            joinOverlay.classList.add('hidden');
+            mainContent.classList.remove('hidden');
+            document.getElementById('connectionStatus').innerText = `Room: ${room} | Player: ${myName}`;
+            
+            connectWebSocket();
+            fetchAudioFiles();
+        });
+        
+        document.getElementById('leaveBtn').addEventListener('click', () => {
+            if(ws) ws.close();
+            stopAllBgms();
+            Object.values(activeSfx).forEach(a => a.pause());
+            joinOverlay.classList.remove('hidden');
+            mainContent.classList.add('hidden');
+        });
+
+        function updateNowPlayingDisplay() {
+            const entries = Object.values(activeBgms);
+            if (entries.length === 0) {
+                nowPlayingText.innerHTML = '- Silence -';
+                return;
+            }
+            nowPlayingText.innerHTML = entries.map(b => {
+                const loopIcon = b.loop ? ' 🔁' : '';
+                const statusTxt = b.isPlaying ? '' : ' (Paused)';
+                const badgeClass = b.isPlaying
+                    ? 'bg-blue-900/50 border-blue-500 text-blue-100'
+                    : 'bg-stone-800/60 border-stone-600 text-stone-400';
+                return `<span class="px-3 py-1 rounded-full border text-sm ${badgeClass}">🎵 ${b.displayName}${loopIcon}${statusTxt}</span>`;
+            }).join('');
+        }
+
+        function syncSingleBgm(filename, volume, time, isPlaying, displayName, loop) {
+            if (!filename) return;
+            let entry = activeBgms[filename];
+            const isNewTrack = !entry;
+
+            if (isNewTrack) {
+                const audio = new Audio(`/static/audio/${encodeURIComponent(filename)}`);
+                entry = {
+                    audio: audio,
+                    defaultVol: volume !== undefined ? parseFloat(volume) : 1.0,
+                    displayName: displayName || filename,
+                    isPlaying: Boolean(isPlaying),
+                    loop: Boolean(loop)
+                };
+                audio.loop = entry.loop;
+                audio.addEventListener('ended', () => {
+                    if (!entry.loop) {
+                        delete activeBgms[filename];
+                        updateNowPlayingDisplay();
+                    }
+                });
+                activeBgms[filename] = entry;
+            } else {
+                if (volume !== undefined && volume !== null) entry.defaultVol = parseFloat(volume);
+                if (displayName) entry.displayName = displayName;
+                if (loop !== undefined && loop !== null) {
+                    entry.loop = Boolean(loop);
+                    entry.audio.loop = entry.loop;
+                }
+                entry.isPlaying = Boolean(isPlaying);
+            }
+
+            entry.audio.volume = entry.defaultVol * masterVol;
+
+            const applyPlayback = () => {
+                entry.audio.onloadedmetadata = null;
+                if (typeof time === 'number' && !isNaN(time)) {
+                    if (isNewTrack || Math.abs(entry.audio.currentTime - time) > 1.5 || entry.audio.paused) {
+                        try { entry.audio.currentTime = time; } catch(err) {}
+                    }
+                }
+                if (entry.isPlaying) {
+                    entry.audio.play().catch(err => console.warn("BGM play blocked:", err));
+                } else {
+                    entry.audio.pause();
+                }
+                updateNowPlayingDisplay();
+            };
+
+            if (isNewTrack && entry.audio.readyState < 1) {
+                entry.audio.onloadedmetadata = applyPlayback;
+            } else {
+                applyPlayback();
+            }
+        }
+
+        function stopSingleBgm(filename) {
+            if (activeBgms[filename]) {
+                activeBgms[filename].audio.pause();
+                activeBgms[filename].audio.currentTime = 0;
+                delete activeBgms[filename];
+                updateNowPlayingDisplay();
+            }
+        }
+
+        function stopAllBgms() {
+            Object.keys(activeBgms).forEach(fname => {
+                activeBgms[fname].audio.pause();
+                activeBgms[fname].audio.currentTime = 0;
+                delete activeBgms[fname];
+            });
+            updateNowPlayingDisplay();
+        }
+
+        function connectWebSocket() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${room}/${encodeURIComponent(myName)}/guest`);
+            
+            ws.onopen = () => {
+                ws.send(JSON.stringify({action: 'request_sync'}));
+            };
+
+            ws.onmessage = (e) => {
+                const cmd = JSON.parse(e.data);
+                
+                if (cmd.action === 'user_update') {
+                    const me = cmd.users.find(u => u.name === myName);
+                    if (me && me.can_upload) uploadPanel.classList.remove('hidden');
+                    else uploadPanel.classList.add('hidden');
+                }
+                
+                if (cmd.action === 'refresh_list') fetchAudioFiles();
+                
+                if (cmd.action === 'room_profile') {
+                    document.getElementById('roomProfileImg').src = cmd.url;
+                }
+
+                if (cmd.action === 'sync_all_bgm') {
+                    const incomingFiles = new Set((cmd.tracks || []).map(t => t.filename));
+                    Object.keys(activeBgms).forEach(fname => {
+                        if (!incomingFiles.has(fname)) stopSingleBgm(fname);
+                    });
+                    (cmd.tracks || []).forEach(t => {
+                        syncSingleBgm(t.filename, t.volume, t.time, t.is_playing, t.display_name, t.loop);
+                    });
+                }
+                
+                if (cmd.action === 'play_bgm' || cmd.action === 'sync_bgm') {
+                    syncSingleBgm(
+                        cmd.filename,
+                        cmd.volume ?? 1.0,
+                        cmd.time ?? 0,
+                        cmd.is_playing !== undefined ? cmd.is_playing : true,
+                        cmd.display_name || cmd.filename,
+                        cmd.loop ?? false
+                    );
+                }
+                if (cmd.action === 'pause_bgm') {
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        if (typeof cmd.time === 'number') {
+                            try { entry.audio.currentTime = cmd.time; } catch(err) {}
+                        }
+                        entry.audio.pause();
+                        entry.isPlaying = false;
+                        updateNowPlayingDisplay();
+                    }
+                }
+                if (cmd.action === 'resume_bgm') {
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        if (typeof cmd.time === 'number') {
+                            try { entry.audio.currentTime = cmd.time; } catch(err) {}
+                        }
+                        entry.audio.play().catch(()=>{});
+                        entry.isPlaying = true;
+                        updateNowPlayingDisplay();
+                    }
+                }
+                if (cmd.action === 'seek_bgm') {
+                    const entry = activeBgms[cmd.filename];
+                    syncSingleBgm(
+                        cmd.filename,
+                        cmd.volume ?? (entry ? entry.defaultVol : 1.0),
+                        cmd.time ?? 0,
+                        cmd.is_playing !== undefined ? cmd.is_playing : (entry ? entry.isPlaying : true),
+                        cmd.display_name || (entry ? entry.displayName : cmd.filename),
+                        cmd.loop !== undefined ? cmd.loop : (entry ? entry.loop : false)
+                    );
+                }
+                if (cmd.action === 'volume_bgm') {
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        entry.defaultVol = parseFloat(cmd.volume);
+                        entry.audio.volume = entry.defaultVol * masterVol;
+                    }
+                }
+                if (cmd.action === 'loop_bgm') {
+                    const entry = activeBgms[cmd.filename];
+                    if (entry) {
+                        entry.loop = Boolean(cmd.loop);
+                        entry.audio.loop = entry.loop;
+                        updateNowPlayingDisplay();
+                    }
+                }
+                if (cmd.action === 'stop_bgm') {
+                    stopSingleBgm(cmd.filename);
+                }
+                
+                if (cmd.action === 'play_sfx') {
+                    if (cmd.sender !== myName) {
+                        playSfxLocally(cmd.filename, cmd.volume);
+                    }
+                    flashBtn(cmd.filename);
+                }
+                if (cmd.action === 'pause_sfx') {
+                    if (cmd.sender !== myName) {
+                        pauseSfxLocally(cmd.filename);
+                    }
+                }
+                if (cmd.action === 'stop_all') {
+                    stopAllBgms();
+                    Object.values(activeSfx).forEach(a => a.pause());
+                    for (let key in activeSfx) delete activeSfx[key];
+                }
+            };
+            ws.onclose = () => setTimeout(connectWebSocket, 3000);
+        }
+
+        function flashBtn(filename) {
+            const btns = document.querySelectorAll(`[data-filename="${filename}"]`);
+            btns.forEach(btn => {
+                btn.classList.remove('user-flash');
+                void btn.offsetWidth;
+                btn.classList.add('user-flash');
+            });
+        }
+
+        function playSfxLocally(file, vol) {
+            let a = activeSfx[file];
+            if (!a) {
+                a = new Audio(`/static/audio/${encodeURIComponent(file)}`);
+                a.dataset.defaultVol = vol || 1.0;
+                activeSfx[file] = a;
+                a.onended = () => { delete activeSfx[file]; };
+            } else if (!a.paused) {
+                a.currentTime = 0;
+            }
+            a.volume = parseFloat(a.dataset.defaultVol) * masterVol;
+            a.play();
+        }
+        
+        function pauseSfxLocally(file) {
+            let a = activeSfx[file];
+            if(a) {
+                if(a.paused) a.play();
+                else a.pause();
+            }
+        }
+
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const filesInput = document.getElementById('audioFile');
+            const status = document.getElementById('uploadStatus');
+            
+            if(filesInput.files.length === 0) return;
+            
+            const fd = new FormData();
+            for(let i=0; i<filesInput.files.length; i++) {
+                fd.append('files', filesInput.files[i]);
+            }
+            fd.append('category', 'SFX');
+            fd.append('uploader_name', myName);
+            
+            status.innerText = `Casting ${filesInput.files.length} spell(s)...`;
+            status.className = "mt-2 text-xs text-yellow-400";
+            
+            const res = await fetch('/api/upload', { method: 'POST', body: fd });
+            if (res.ok) {
+                status.innerText = "Audio conjured!";
+                status.className = "mt-2 text-xs text-green-400";
+                document.getElementById('uploadForm').reset();
+                fetchAudioFiles();
+                ws.send(JSON.stringify({action: 'refresh_list'}));
+            } else {
+                status.innerText = "Spell failed. Check file format.";
+                status.className = "mt-2 text-xs text-red-400";
+            }
+        });
+
+        async function fetchAudioFiles() {
+            const res = await fetch('/api/audio_files');
+            const data = await res.json();
+            const sfxs = data.files.filter(f => f.category === 'SFX');
+            
+            sfxList.innerHTML = '';
+            sfxs.forEach(f => {
+                const safePath = f.file_path.replace(/'/g, "\'");
+                const isMine = f.uploader_name === myName;
+                const uploaderTxt = f.uploader_name !== 'Host' ? `<br><span class="text-[10px] text-blue-400 font-normal">By: ${f.uploader_name}</span>` : '';
+                const btn = document.createElement('div');
+                btn.dataset.filename = f.file_path;
+                btn.className = 'bg-black/30 p-2 rounded border border-blue-900/50 hover:bg-blue-900/20 transition text-center relative shadow-md shadow-black flex flex-col items-center justify-between min-h-[90px]';
+                
+                let html = `<span class="font-bold text-sm tracking-wide text-blue-100 cursor-pointer w-full" onclick="ws.send(JSON.stringify({action: 'play_sfx', filename: '${safePath}', volume: ${f.default_volume}, sender: myName})); playSfxLocally('${safePath}', ${f.default_volume});">${f.display_name}${uploaderTxt}</span>`;
+                
+                if(isMine) {
+                    html += `<button onclick="deleteMyFile(event, ${f.id})" class="absolute top-1 right-1 text-[10px] bg-red-900/80 px-1 rounded hover:bg-red-700 z-10">x</button>`;
+                }
+                
+                html += `<div class="mt-2 w-full flex justify-center gap-1 border-t border-blue-900/30 pt-1">
+                    <button onclick="ws.send(JSON.stringify({action: 'pause_sfx', filename: '${safePath}', sender: myName})); pauseSfxLocally('${safePath}');" class="text-[10px] bg-amber-800/80 hover:bg-amber-700 px-2 py-1 rounded w-full">❚❚ Pause/Resume</button>
+                </div>`;
+                
+                btn.innerHTML = html;
+                sfxList.appendChild(btn);
+            });
+        }
+
+        async function deleteMyFile(e, id) {
+            e.stopPropagation();
+            if(!confirm("Erase this sound?")) return;
+            await fetch(`/api/audio_files/${id}`, {method: 'DELETE'});
+            ws.send(JSON.stringify({action: 'refresh_list'}));
+            fetchAudioFiles();
+        }
+    </script>
+</body>
+</html>
